@@ -1,32 +1,48 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
-    pub wallet: WalletConfig,
-    pub sync: SyncConfig,
-    pub journal: JournalConfig,
+    pub wallets: HashMap<String, WalletConfig>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WalletConfig {
-    pub descriptor: SecretSource,
-    pub network: Network, 
+    pub wallet: String,
+    pub network: Network,
+    pub ext_descriptor: String,
+    pub int_descriptor: Option<String>,
+    pub client_type: ClientType,
+    pub server_url: String,
+    pub journal_file: Option<PathBuf>,
+    /// hledger account name (default: assets:bitcoin:<wallet>)
+    pub account: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct SyncConfig {
-    pub backend: Backend, 
-    pub url: String,
+impl WalletConfig {
+    pub fn int_descriptor(&self) -> String {
+        self.int_descriptor
+            .clone()
+            .unwrap_or_else(|| derive_change_descriptor(&self.ext_descriptor))
+    }
+
+    pub fn account_name(&self) -> String {
+        self.account
+            .clone()
+            .unwrap_or_else(|| format!("assets:bitcoin:{}", self.wallet))
+    }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct JournalConfig {
-    pub file: PathBuf,
-    pub account: String,
+/// Derives a change (internal) descriptor by replacing the last /0/* with /1/*.
+fn derive_change_descriptor(ext: &str) -> String {
+    match ext.rfind("/0/*") {
+        Some(pos) => format!("{}/1/*{}", &ext[..pos], &ext[pos + 4..]),
+        None => ext.to_string(),
+    }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Network {
     Bitcoin,
@@ -35,60 +51,34 @@ pub enum Network {
     Regtest,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Backend {
-    // Esplora,
-    Electrum,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(tag = "source")]
-pub enum SecretSource {
-    #[serde(rename = "literal")]
-    Literal { value: String },
-    #[serde(rename = "env")]
-    Env { key: String },
-    #[serde(rename = "keyring")]
-    Keyring { service: String, key: String },
-    #[serde(rename = "bitwarden_cli")]
-    BitwardenCli { item_id: String },
-}
-
-impl SecretSource {
-    pub fn resolve(&self) -> anyhow::Result<String> {
-        match self {
-            Self::Literal { value } => Ok(value.clone()),
-            Self::Env { key } => std::env::var(key).map_err(|_| {
-                anyhow::anyhow!("env var `{key}` not set")
-            }),
-            Self::Keyring { service, key } => {
-                let entry = keyring::Entry::new(service, key)?;
-                entry.get_password().map_err(Into::into)
-            }
-            Self::BitwardenCli { item_id } => {
-                let out = std::process::Command::new("bw")
-                    .args(["get", "password", item_id])
-                    .output()?;
-                anyhow::ensure!(out.status.success(), "bw exited non-zero");
-                Ok(String::from_utf8(out.stdout)?.trim().to_string())
-            }
+impl From<Network> for bdk_wallet::bitcoin::Network {
+    fn from(n: Network) -> Self {
+        match n {
+            Network::Bitcoin => bdk_wallet::bitcoin::Network::Bitcoin,
+            Network::Testnet => bdk_wallet::bitcoin::Network::Testnet,
+            Network::Signet => bdk_wallet::bitcoin::Network::Signet,
+            Network::Regtest => bdk_wallet::bitcoin::Network::Regtest,
         }
     }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClientType {
+    Electrum,
 }
 
 pub fn config_path() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("hledger-btc")
-        .join("config.toml")
+        .join("wallets.toml")
 }
 
-pub fn load() -> anyhow::Result<Config> {
-    let path = config_path();
-    anyhow::ensure!(path.exists(), "config not found at {path:?} — run `hledger-btc init`");
-    check_permissions(&path)?;
-    let raw = std::fs::read_to_string(&path)?;
+pub fn load(path: &PathBuf) -> anyhow::Result<Config> {
+    anyhow::ensure!(path.exists(), "config not found at {path:?}");
+    check_permissions(path)?;
+    let raw = std::fs::read_to_string(path)?;
     toml::from_str(&raw).map_err(Into::into)
 }
 

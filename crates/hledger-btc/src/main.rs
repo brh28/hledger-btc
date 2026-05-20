@@ -1,7 +1,9 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tracing_subscriber::EnvFilter;
 use std::io::BufWriter;
+use tracing_subscriber::EnvFilter;
+
+use hledger_btc_core::{config, journal, sync};
 
 #[derive(Parser)]
 #[command(name = "hledger-btc", about = "Bitcoin accounting for hledger")]
@@ -15,10 +17,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Initialize wallet config
-    Init,
-    /// Sync transactions from the blockchain
-    Sync,
+    /// Sync confirmed transactions for all wallets and write hledger journals
+    Sync {
+        /// Config file path (default: ~/.config/hledger-btc/config.toml)
+        #[arg(long)]
+        config: Option<std::path::PathBuf>,
+    },
     /// Import BIP329 labels into hledger journal
     Import {
         #[arg(short, long)]
@@ -45,21 +49,27 @@ fn main() -> Result<()> {
         .init();
 
     match cli.command {
-        Command::Init => todo!("init"),
-        Command::Sync => todo!("sync"),
-        Command::Import { file } => {
-            let reader: Box<dyn std::io::Read> = match file {
-                Some(path) => Box::new(std::fs::File::open(path)?),
-                None => Box::new(std::io::stdin()),
-            };
+        Command::Sync { config: config_file } => {
+            let config_path = config_file.unwrap_or_else(config::config_path);
+            let cfg = config::load(&config_path)?;
+
+            for wallet_cfg in cfg.wallets.values() {
+                let entries = sync::sync(wallet_cfg)?;
+
+                let mut writer: Box<dyn std::io::Write> = match &wallet_cfg.journal_file {
+                    Some(path) => Box::new(BufWriter::new(std::fs::File::create(path)?)),
+                    None => Box::new(std::io::stdout()),
+                };
+                journal::write_journal(&entries, &mut writer)?;
+            }
+        }
+        Command::Import { file: _ } => {
             todo!("import")
         }
-        Command::Export { file } => {
-            let writer: Box<dyn std::io::Write> = match file {
-                Some(path) => Box::new(BufWriter::new(std::fs::File::create(path)?)),
-                None => Box::new(std::io::stdout()),
-            };
+        Command::Export { file: _ } => {
             todo!("export")
         }
     }
+
+    Ok(())
 }

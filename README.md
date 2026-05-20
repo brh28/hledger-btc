@@ -3,150 +3,130 @@
 A Bitcoin accounting add-on for [hledger](https://hledger.org), written in Rust.
 
 `hledger-btc` bridges your Bitcoin wallet and your hledger journal. It fetches
-transaction history from the blockchain and appends entries to your journal,
-with hledger as the single source of truth. UTXOs and balances are derived from
-the ledger rather than maintained in a separate wallet database.
+confirmed transaction history from the blockchain and writes entries to your
+journal, with hledger as the single source of truth.
 
 ## Features
 
-- **`hledger-btc sync`** — fetch new transactions from the blockchain and append them to your hledger journal
-- **`hledger-btc import`** — import [BIP329](https://github.com/bitcoin/bips/blob/master/bip-0329.mediawiki) labels into your journal
-- **`hledger-btc export`** — export your journal to BIP329 label format
+- **`sync`** — fetch confirmed transactions for all configured wallets and write them to hledger journals
+- **`import`** — import [BIP329](https://github.com/bitcoin/bips/blob/master/bip-0329.mediawiki) labels into your journal *(planned)*
+- **`export`** — export your journal to BIP329 label format *(planned)*
 
-Transactions are recorded in `SAT` (satoshis) and include `TotalPrice`/`TotalCost`
-annotations where available.
+## Usage
+
+```bash
+# Sync all wallets defined in ~/.config/hledger-btc/wallets.toml
+hledger-btc sync
+
+# Override config file location
+hledger-btc sync --config /path/to/wallets.toml
+
+# Increase verbosity (-v info, -vv debug, -vvv trace)
+hledger-btc -v sync
+```
+
+## Installation
+
+From source:
+
+```bash
+git clone https://github.com/brh28/hledger-btc
+cd hledger-btc
+cargo install --path crates/hledger-btc
+```
+
+## Configuration
+
+Config lives at `~/.config/hledger-btc/wallets.toml`. It may contain private
+key material — restrict permissions with `chmod 600`. The tool warns on startup
+if the file is group- or world-readable.
+
+Each wallet is a `[wallets.<name>]` section:
+
+```toml
+[wallets.mywallet]
+wallet       = "mywallet"
+network      = "bitcoin"          # bitcoin | testnet | signet | regtest
+ext_descriptor = "wpkh([fingerprint/84'/0'/0']xprv.../0/*)"
+int_descriptor = "wpkh([fingerprint/84'/0'/0']xprv.../1/*)"  # optional, derived from ext if omitted
+client_type  = "electrum"
+server_url   = "tcp://my-electrum-server:50001"
+journal_file = "/home/user/finances/bitcoin.journal"  # optional, stdout if omitted
+account      = "assets:bitcoin:mywallet"              # optional, default: assets:bitcoin:<wallet>
+```
+
+
+## Give it a try
+
+A working example is provided in [`wallets.toml.example`](wallets.toml.example).
+
+1. Set config: `cp wallets.toml.example  ~/.config/hledger-btc/wallets.toml`
+2. Run: `cargo run -- sync` 
+3. Verify:
+```
+➜ alias hl-test="hledger -f /tmp/testwallet.journal" 
+➜ hl-test bal
+         3355645 SAT  expenses:fees:onchain
+         2227326 SAT  expenses:unknown
+        -5582971 SAT  income:unknown
+--------------------
+                   0  
+➜ hl-test print bc1qfp32zz2wenptc9nvu7v9qedhf8vdkufljq8qzx
+2026-05-02 * Outgoing BTC  ; txid:9f3e90d36c37cc5025dce7a3fedabcace7e6391470642e148a4927ba268b47>
+    assets:bitcoin:testwallet:bc1qfp32zz2wenptc9nvu7v9qedhf8vdkufljq8qzx       -4000 SAT
+    expenses:fees:onchain                                                       3960 SAT
+    expenses:unknown
+ 
+2026-05-02 * Incoming BTC  ; txid:8cae3bef307ca4b3bf7a6461d94352e98b38a39a6a39205ad5528fddcf49fa>
+    assets:bitcoin:testwallet:bc1qfp32zz2wenptc9nvu7v9qedhf8vdkufljq8qzx        4000 SAT
+    income:unknown
+```
 
 ## Design
 
 ### hledger as source of truth
 
-Unlike a traditional wallet, `hledger-btc` does not maintain its own UTXO set
-or transaction database. Your hledger journal is the source of truth. On each
-sync, the tool derives your address set from your descriptor, queries the
-blockchain backend for transaction history, and appends any entries not already
-present in the journal.
+`hledger-btc` does not maintain its own UTXO set or transaction database. The
+journal file is the store. On each sync the tool scans the blockchain via
+Electrum, builds journal entries from confirmed transactions, and writes them to
+the configured file.
 
-### BIP329
+### Per-address sub-accounts
 
-[BIP329](https://github.com/bitcoin/bips/blob/master/bip-0329.mediawiki) is a
-standard JSONL format for wallet labels. `hledger-btc import` reads BIP329
-records and maps them to hledger journal entries. `hledger-btc export` produces
-BIP329 output from your journal. `xpub` records are stripped from export output
-by default.
+Each Bitcoin address becomes a sub-account under the wallet account (e.g.
+`assets:bitcoin:mywallet:bc1q...`). This makes it possible to track which
+address holds or spent funds, audit individual UTXOs, and produce accurate
+per-address balance reports in hledger.
 
 ### SAT accounting
 
-All amounts are recorded in satoshis to avoid floating point imprecision:
+All amounts are recorded in satoshis to avoid floating-point imprecision.
 
-```journal
-commodity 1000000000 SAT
+### BIP329 *(planned)*
 
-2024-01-15 Received payment
-    assets:bitcoin        500000 SAT @@ $142.50
-    income:bitcoin
-```
+[BIP329](https://github.com/bitcoin/bips/blob/master/bip-0329.mediawiki) is a
+standard JSONL format for wallet labels. `import` and `export` subcommands are
+planned for a future release.
 
-## Configuration
+## Project status
 
-Config is stored at `~/.config/hledger-btc/config.toml`. This file may contain
-sensitive information (descriptors); ensure it is readable only by your user
-(`chmod 600`). The tool will warn on startup if permissions are too open.
-
-```toml
-[wallet]
-network = "bitcoin"  # bitcoin | testnet | signet | regtest
-
-[wallet.descriptor]
-source = "env"
-key = "HLEDGER_BTC_DESCRIPTOR"
-
-[sync]
-backend = "electrum"  # electrum | esplora
-url = "tcp://my-electrum-server:50001"
-
-[journal]
-file = "/home/user/finances/bitcoin.journal"
-account = "assets:bitcoin"
-```
-
-## Installation
-
-```bash
-cargo install hledger-btc
-```
-
-Or from source:
-
-```bash
-git clone https://github.com/yourname/hledger-btc
-cd hledger-btc
-cargo install --path crates/hledger-btc
-```
-
-## Usage
-
-```bash
-
-# Sync new transactions from the blockchain
-hledger-btc sync
-
-# Import BIP329 labels (from file or stdin)
-hledger-btc import --file labels.jsonl
-cat labels.jsonl | hledger-btc import
-
-# Export journal to BIP329 (to file or stdout)
-hledger-btc export --file labels.jsonl
-hledger-btc export > labels.jsonl
-```
-
-## Project plan
-
-### ✅ Phase 1 — Project scaffold
-
-- Cargo workspace with lib/bin split (`hledger-btc-core` + `hledger-btc`)
-- CLI skeleton with `clap` (`init`, `sync`, `import`, `export` subcommands)
-- Typed config with `serde`/`toml` — `Network` and `Backend` enums, `SecretSource` enum
-- `SecretSource` resolution (`literal`, `env`, `keyring`, `bitwarden_cli`)
-- File permission check on config load (Unix)
-- `tracing` + `tracing-subscriber` wired to `-v` verbosity flag
-- `dirs` for platform-appropriate config path
-
-### 🔲 Phase 2 — Wallet & sync
-
-- Connect to Electrum backend via `bdk_esplora` or `bdk_electrum`
-- Derive addresses from descriptor
-- Fetch transaction history for derived addresses
-- Diff against existing journal entries
-- Append new transactions to journal in SAT with optional `@@` cost annotation
-
-### 🔲 Phase 3 — Import (BIP329 → hledger)
-
-- BIP329 JSONL parser
-- Map `tx`, `addr`, `output` records to hledger journal entries
-- Price feed integration for `TotalPrice`/`TotalCost`
-
-### 🔲 Phase 4 — Export (hledger → BIP329)
-
-- hledger journal reader
-- Map journal transactions to BIP329 label records
-- Strip `xpub` records from output by default
-- Round-trip fidelity tests (import → export → diff)
-
-### 🔲 Phase 5 — Polish & release
-
-- `hledger-btc check` — audit journal against live chain state
-- README, man page
-- GitHub Actions CI (Linux, macOS, Windows)
-- `crates.io` publish
+| Phase | Status | Description |
+|---|---|---|
+| 1 — Scaffold | ✅ | Workspace, CLI, config, logging |
+| 2 — Sync | ✅ | Electrum scan, per-address postings, fee extraction |
+| 3 — Import | 🔲 | BIP329 → hledger |
+| 4 — Export | 🔲 | hledger → BIP329 |
+| 5 — Polish | 🔲 | CI, `check` command, crates.io publish |
 
 ## Dependencies
 
 | Crate | Purpose |
 |---|---|
-| `bdk_wallet` | Descriptor parsing, address derivation |
-| `bdk_esplora` | Blockchain backend client |
+| `bdk_wallet` | Descriptor parsing, address derivation, fee calculation |
+| `bdk_electrum` | Electrum blockchain backend |
 | `clap` | CLI argument parsing |
 | `serde` + `toml` | Config serialization |
+| `chrono` | Date formatting |
 | `keyring` | OS keychain integration |
 | `dirs` | Platform config directory |
 | `anyhow` + `thiserror` | Error handling |
