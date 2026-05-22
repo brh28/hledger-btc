@@ -9,7 +9,7 @@ journal, with hledger as the single source of truth.
 ## Features
 
 - **`scan`** — fetch confirmed transactions for all configured wallets and write them to hledger journals
-- **`receive`** — derive a new receiving address (or register an existing one) and record it in the journal as a receivable *(planned)*
+- **`receive`** — derive a new receiving address and record it in the journal as a receivable
 - **`trace`** — print the transaction history for a given address *(planned)*
 - **`import`** — import [BIP329](https://github.com/bitcoin/bips/blob/master/bip-0329.mediawiki) labels into your journal *(planned)*
 - **`export`** — export your journal to BIP329 label format *(planned)*
@@ -29,8 +29,8 @@ hledger-btc -v scan
 # Derive a new receiving address and record it as a receivable
 hledger-btc receive
 
-# Register an existing address as a receivable
-hledger-btc receive --address bc1q...
+# With metadata
+hledger-btc receive --description="Invoice 3" --amount=100000 --total-cost='USD 500.00'
 
 # Print transaction history for an address
 hledger-btc trace bc1q...
@@ -125,11 +125,12 @@ planned for a future release.
 |---|---|---|
 | 1 — Scaffold | ✅ | Workspace, CLI, config, logging |
 | 2 — Scan | ✅ | Electrum scan, per-address postings, fee extraction |
-| 3 — Receive | 🔲 | Address derivation, receivable journal entries |
+| 3 — Receive | ✅ | Address derivation, receivable journal entries |
 | 4 — Trace | 🔲 | Per-address transaction history |
 | 5 — Import | 🔲 | BIP329 → hledger |
 | 6 — Export | 🔲 | hledger → BIP329 |
-| 7 — Polish | 🔲 | CI, crates.io publish |
+| 7 — Tests | 🔲 | Unit tests for journal formatting and receive entry construction; integration tests for scan against regtest |
+| 8 — Polish | 🔲 | CI, crates.io publish |
 
 ## Dependencies
 
@@ -137,6 +138,7 @@ planned for a future release.
 |---|---|
 | `bdk_wallet` | Descriptor parsing, address derivation, fee calculation |
 | `bdk_electrum` | Electrum blockchain backend |
+| `bdk_file_store` | Persistent wallet state (keychain index, UTXO graph) |
 | `clap` | CLI argument parsing |
 | `serde` + `toml` | Config serialization |
 | `chrono` | Date formatting |

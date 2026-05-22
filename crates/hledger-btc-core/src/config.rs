@@ -16,6 +16,7 @@ pub struct WalletConfig {
     pub client_type: ClientType,
     pub server_url: String,
     pub journal_file: Option<PathBuf>,
+    pub state_file: Option<PathBuf>,
     /// hledger account name (default: assets:bitcoin:<wallet>)
     pub account: Option<String>,
 }
@@ -25,6 +26,15 @@ impl WalletConfig {
         self.int_descriptor
             .clone()
             .unwrap_or_else(|| derive_change_descriptor(&self.ext_descriptor))
+    }
+
+    pub fn state_path(&self) -> PathBuf {
+        self.state_file.clone().unwrap_or_else(|| {
+            dirs::data_local_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("hledger-btc")
+                .join(format!("{}.db", self.wallet))
+        })
     }
 
     pub fn account_name(&self) -> String {

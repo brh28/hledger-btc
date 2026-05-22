@@ -30,20 +30,34 @@ impl fmt::Display for TagMap {
 }
 
 #[derive(Debug, Clone)]
+pub enum PriceAnnotation {
+    /// Per-unit price: `@ PRICE`
+    Unit(String),
+    /// Total cost: `@@ COST`
+    Total(String),
+}
+
+#[derive(Debug, Clone)]
 pub struct Posting {
     pub account: String,
     /// `None` means hledger auto-balances this posting.
     pub amount_sat: Option<i64>,
+    pub price: Option<PriceAnnotation>,
     pub tags: TagMap,
 }
 
 impl Posting {
     pub fn with_amount(account: impl Into<String>, amount_sat: i64) -> Self {
-        Posting { account: account.into(), amount_sat: Some(amount_sat), tags: TagMap::new() }
+        Posting { account: account.into(), amount_sat: Some(amount_sat), price: None, tags: TagMap::new() }
     }
 
     pub fn auto_balance(account: impl Into<String>) -> Self {
-        Posting { account: account.into(), amount_sat: None, tags: TagMap::new() }
+        Posting { account: account.into(), amount_sat: None, price: None, tags: TagMap::new() }
+    }
+
+    pub fn with_price(mut self, price: Option<PriceAnnotation>) -> Self {
+        self.price = price;
+        self
     }
 }
 
@@ -88,10 +102,15 @@ fn write_entry(entry: &JournalEntry, w: &mut dyn Write) -> Result<()> {
     for posting in &entry.postings {
         match posting.amount_sat {
             Some(sats) => {
+                let price = match &posting.price {
+                    Some(PriceAnnotation::Unit(p)) => format!(" @ {p}"),
+                    Some(PriceAnnotation::Total(c)) => format!(" @@ {c}"),
+                    None => String::new(),
+                };
                 if posting.tags.is_empty() {
-                    writeln!(w, "    {}    {} SAT", posting.account, sats)?;
+                    writeln!(w, "    {}    {} SAT{}", posting.account, sats, price)?;
                 } else {
-                    writeln!(w, "    {}    {} SAT  ; {}", posting.account, sats, posting.tags)?;
+                    writeln!(w, "    {}    {} SAT{}  ; {}", posting.account, sats, price, posting.tags)?;
                 }
             }
             None => writeln!(w, "    {}", posting.account)?,

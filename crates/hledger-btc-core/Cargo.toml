@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 bdk_wallet.workspace = true
 bdk_electrum.workspace = true
+bdk_file_store.workspace = true
 serde.workspace = true
 toml.workspace = true
 anyhow.workspace = true

@@ -7,5 +7,6 @@ edition = "2024"
 hledger-btc-core = { path = "../hledger-btc-core" }
 clap.workspace = true
 anyhow.workspace = true
+chrono.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

@@ -1,11 +1,12 @@
 use anyhow::Result;
 use bdk_electrum::{BdkElectrumClient, electrum_client};
-use bdk_wallet::Wallet;
+use bdk_wallet::{KeychainKind, Wallet};
 use bdk_wallet::bitcoin::{Address, Network, Transaction};
 use bdk_wallet::chain::ChainPosition;
 
 use crate::config::WalletConfig;
 use crate::journal::{JournalEntry, Posting, TagMap};
+use crate::persist::WalletStore;
 
 const STOP_GAP: usize = 20;
 const BATCH_SIZE: usize = 5;
@@ -13,10 +14,24 @@ const BATCH_SIZE: usize = 5;
 pub fn scan(config: &WalletConfig) -> Result<Vec<JournalEntry>> {
     let network: Network = config.network.into();
 
-    tracing::info!("creating wallet '{}' on {:?}", config.wallet, network);
-    let mut wallet = Wallet::create(config.ext_descriptor.clone(), config.int_descriptor())
-        .network(network)
-        .create_wallet_no_persist()?;
+    let mut db = WalletStore::load_or_create(&config.state_path())?;
+
+    let mut wallet = match Wallet::load()
+        .descriptor(KeychainKind::External, Some(config.ext_descriptor.clone()))
+        .descriptor(KeychainKind::Internal, Some(config.int_descriptor()))
+        .load_wallet(&mut db)?
+    {
+        Some(w) => {
+            tracing::info!("loaded wallet '{}' from state ({:?})", config.wallet, config.state_path());
+            w
+        }
+        None => {
+            tracing::info!("initializing new wallet '{}' on {:?}", config.wallet, network);
+            Wallet::create(config.ext_descriptor.clone(), config.int_descriptor())
+                .network(network)
+                .create_wallet(&mut db)?
+        }
+    };
 
     tracing::info!("connecting to {}", config.server_url);
     let client = BdkElectrumClient::new(electrum_client::Client::new(&config.server_url)?);
@@ -26,6 +41,7 @@ pub fn scan(config: &WalletConfig) -> Result<Vec<JournalEntry>> {
     tracing::info!("scanning blockchain (stop_gap={STOP_GAP})…");
     let update = client.full_scan(wallet.start_full_scan(), STOP_GAP, BATCH_SIZE, true)?;
     wallet.apply_update(update)?;
+    wallet.persist(&mut db)?;
 
     let base = config.account_name();
     let mut entries: Vec<JournalEntry> = wallet

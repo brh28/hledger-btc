@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use std::io::BufWriter;
 use tracing_subscriber::EnvFilter;
 
-use hledger_btc_core::{config, journal, scan};
+use hledger_btc_core::{config, journal, receive, scan};
 
 #[derive(Parser)]
 #[command(name = "hledger-btc", about = "Bitcoin accounting for hledger")]
@@ -23,14 +23,29 @@ enum Command {
         #[arg(long)]
         config: Option<std::path::PathBuf>,
     },
-    /// Generate or register a receiving address and record it in the journal as a receivable
+    /// Generate a receiving address and record it in the journal as a receivable
     Receive {
         /// Config file path (default: ~/.config/hledger-btc/config.toml)
         #[arg(long)]
         config: Option<std::path::PathBuf>,
-        /// Bitcoin address to record; if omitted a new address is derived from the wallet
+        /// Wallet to derive the address from (required if multiple wallets are configured)
         #[arg(long)]
-        address: Option<String>,
+        wallet: Option<String>,
+        /// Date of the entry (default: today, format: YYYY-MM-DD)
+        #[arg(long)]
+        date: Option<chrono::NaiveDate>,
+        /// Description for the journal entry (default: "Awaiting Payment")
+        #[arg(long)]
+        description: Option<String>,
+        /// Expected amount in satoshis (default: 0)
+        #[arg(long)]
+        amount: Option<i64>,
+        /// Per-unit price annotation, e.g. "USD 0.00045" (mutually exclusive with --total-cost)
+        #[arg(long, conflicts_with = "total_cost")]
+        unit_price: Option<String>,
+        /// Total cost annotation, e.g. "USD 45" (mutually exclusive with --unit-price)
+        #[arg(long, conflicts_with = "unit_price")]
+        total_cost: Option<String>,
     },
     /// Print the transaction history for a given address
     Trace {
@@ -99,8 +114,46 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Command::Receive { config: _, address: _ } => {
-            todo!("receive")
+        Command::Receive { config: config_file, wallet, date, description, amount, unit_price, total_cost } => {
+            let config_path = config_file.unwrap_or_else(config::config_path);
+            let cfg = config::load(&config_path)?;
+
+            let wallet_cfg = match wallet {
+                Some(ref name) => cfg.wallets.get(name)
+                    .ok_or_else(|| anyhow::anyhow!("wallet '{name}' not found in config"))?,
+                None => match cfg.wallets.len() {
+                    0 => anyhow::bail!("no wallets configured"),
+                    1 => cfg.wallets.values().next().unwrap(),
+                    _ => anyhow::bail!("multiple wallets configured, specify one with --wallet"),
+                },
+            };
+
+            let price = match (unit_price, total_cost) {
+                (Some(p), _) => Some(journal::PriceAnnotation::Unit(p)),
+                (_, Some(c)) => Some(journal::PriceAnnotation::Total(c)),
+                _ => None,
+            };
+
+            let params = receive::ReceiveParams {
+                date: date.unwrap_or_else(|| chrono::Local::now().date_naive()),
+                description: description.unwrap_or_else(|| "Awaiting Payment".to_string()),
+                amount_sat: amount.unwrap_or(0),
+                price,
+            };
+
+            let entry = receive::receive(wallet_cfg, params)?;
+
+            if let Some((_, addr)) = entry.tags.0.iter().find(|(k, _)| k == "address") {
+                eprintln!("address: {addr}");
+            }
+
+            match &wallet_cfg.journal_file {
+                Some(path) => {
+                    let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+                    journal::write_entries(&[entry], &mut BufWriter::new(file))?;
+                }
+                None => journal::write_entries(&[entry], &mut std::io::stdout())?,
+            }
         }
         Command::Trace { address: _, config: _ } => {
             todo!("trace")
