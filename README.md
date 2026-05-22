@@ -8,21 +8,32 @@ journal, with hledger as the single source of truth.
 
 ## Features
 
-- **`sync`** — fetch confirmed transactions for all configured wallets and write them to hledger journals
+- **`scan`** — fetch confirmed transactions for all configured wallets and write them to hledger journals
+- **`receive`** — derive a new receiving address (or register an existing one) and record it in the journal as a receivable *(planned)*
+- **`trace`** — print the transaction history for a given address *(planned)*
 - **`import`** — import [BIP329](https://github.com/bitcoin/bips/blob/master/bip-0329.mediawiki) labels into your journal *(planned)*
 - **`export`** — export your journal to BIP329 label format *(planned)*
 
 ## Usage
 
 ```bash
-# Sync all wallets defined in ~/.config/hledger-btc/wallets.toml
-hledger-btc sync
+# Scan all wallets defined in ~/.config/hledger-btc/config.toml
+hledger-btc scan
 
 # Override config file location
-hledger-btc sync --config /path/to/wallets.toml
+hledger-btc scan --config /path/to/config.toml
 
 # Increase verbosity (-v info, -vv debug, -vvv trace)
-hledger-btc -v sync
+hledger-btc -v scan
+
+# Derive a new receiving address and record it as a receivable
+hledger-btc receive
+
+# Register an existing address as a receivable
+hledger-btc receive --address bc1q...
+
+# Print transaction history for an address
+hledger-btc trace bc1q...
 ```
 
 ## Installation
@@ -61,7 +72,7 @@ account      = "assets:bitcoin:mywallet"              # optional, default: asset
 A working example is provided in [`wallets.toml.example`](wallets.toml.example).
 
 1. Set config: `cp wallets.toml.example  ~/.config/hledger-btc/wallets.toml`
-2. Run: `cargo run -- sync` 
+2. Run: `cargo run -- scan` 
 3. Verify:
 ```
 ➜ alias hl-test="hledger -f /tmp/testwallet.journal" 
@@ -113,10 +124,12 @@ planned for a future release.
 | Phase | Status | Description |
 |---|---|---|
 | 1 — Scaffold | ✅ | Workspace, CLI, config, logging |
-| 2 — Sync | ✅ | Electrum scan, per-address postings, fee extraction |
-| 3 — Import | 🔲 | BIP329 → hledger |
-| 4 — Export | 🔲 | hledger → BIP329 |
-| 5 — Polish | 🔲 | CI, `check` command, crates.io publish |
+| 2 — Scan | ✅ | Electrum scan, per-address postings, fee extraction |
+| 3 — Receive | 🔲 | Address derivation, receivable journal entries |
+| 4 — Trace | 🔲 | Per-address transaction history |
+| 5 — Import | 🔲 | BIP329 → hledger |
+| 6 — Export | 🔲 | hledger → BIP329 |
+| 7 — Polish | 🔲 | CI, crates.io publish |
 
 ## Dependencies
 

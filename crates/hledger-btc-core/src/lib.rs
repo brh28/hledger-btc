@@ -1,3 +1,3 @@
 pub mod config;
 pub mod journal;
-pub mod sync;
+pub mod scan;

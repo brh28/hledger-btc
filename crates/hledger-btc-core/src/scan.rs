@@ -10,7 +10,7 @@ use crate::journal::{JournalEntry, Posting, TagMap};
 const STOP_GAP: usize = 20;
 const BATCH_SIZE: usize = 5;
 
-pub fn sync(config: &WalletConfig) -> Result<Vec<JournalEntry>> {
+pub fn scan(config: &WalletConfig) -> Result<Vec<JournalEntry>> {
     let network: Network = config.network.into();
 
     tracing::info!("creating wallet '{}' on {:?}", config.wallet, network);

@@ -1,5 +1,6 @@
+use std::collections::HashSet;
 use std::fmt;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Write};
 use anyhow::Result;
 use chrono::NaiveDate;
 
@@ -54,7 +55,23 @@ pub struct JournalEntry {
     pub postings: Vec<Posting>,
 }
 
-pub fn write_journal(entries: &[JournalEntry], writer: &mut dyn Write) -> Result<()> {
+pub fn read_txids(reader: impl Read) -> Result<HashSet<String>> {
+    let mut txids = HashSet::new();
+    for line in BufReader::new(reader).lines() {
+        let line = line?;
+        if line.starts_with(' ') || line.starts_with('\t') || line.is_empty() {
+            continue;
+        }
+        if let Some(pos) = line.find("txid:") {
+            let rest = &line[pos + 5..];
+            let end = rest.find([',', ' ']).unwrap_or(rest.len());
+            txids.insert(rest[..end].to_string());
+        }
+    }
+    Ok(txids)
+}
+
+pub fn write_entries(entries: &[JournalEntry], writer: &mut dyn Write) -> Result<()> {
     for entry in entries {
         write_entry(entry, writer)?;
     }
