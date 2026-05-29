@@ -4,7 +4,9 @@ use std::io::BufWriter;
 use std::process::Stdio;
 use tracing_subscriber::EnvFilter;
 
-use hledger_btc_core::{config, journal, receive, scan};
+use std::io::Read;
+
+use hledger_btc_core::{config, export, import, journal, receive, scan};
 
 #[derive(Parser)]
 #[command(name = "hledger-btc", about = "Bitcoin accounting for hledger")]
@@ -58,13 +60,37 @@ enum Command {
     },
     /// Import BIP329 labels into hledger journal
     Import {
+        /// Path to JSONL file; reads stdin if omitted
         #[arg(short, long)]
         file: Option<std::path::PathBuf>,
+
+        /// Wallet name to associate with all imported annotations;
+        /// defaults to the filename stem when --file is provided,
+        /// required when reading from stdin
+        #[arg(short, long)]
+        wallet: Option<String>,
+
+        /// Replace existing label tags instead of skipping already-labelled entries
+        #[arg(long = "override")]
+        override_existing: bool,
+
+        /// Config file path (default: ~/.config/hledger-btc/config.toml)
+        #[arg(long)]
+        config: Option<std::path::PathBuf>,
     },
     /// Export hledger journal to BIP329 labels
     Export {
+        /// Output JSONL file; writes to stdout if omitted
         #[arg(short, long)]
         file: Option<std::path::PathBuf>,
+
+        /// Wallet to export (required if multiple wallets are configured)
+        #[arg(short, long)]
+        wallet: Option<String>,
+
+        /// Config file path (default: ~/.config/hledger-btc/config.toml)
+        #[arg(long)]
+        config: Option<std::path::PathBuf>,
     },
 }
 
@@ -171,11 +197,77 @@ fn main() -> Result<()> {
         Command::Trace { address: _, config: _ } => {
             todo!("trace")
         }
-        Command::Import { file: _ } => {
-            todo!("import")
+        Command::Import { file, wallet, override_existing, config: config_file } => {
+            let config_path = config_file.unwrap_or_else(config::config_path);
+            let cfg = config::load(&config_path)?;
+
+            let wallet_name: String = match (&file, &wallet) {
+                (_, Some(w)) => w.clone(),
+                (Some(path), None) => path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(String::from)
+                    .ok_or_else(|| anyhow::anyhow!("could not derive wallet name from file path"))?,
+                (None, None) => anyhow::bail!("--wallet is required when reading from stdin"),
+            };
+
+            let wallet_cfg = cfg.wallets.get(&wallet_name)
+                .ok_or_else(|| anyhow::anyhow!("wallet '{wallet_name}' not found in config"))?;
+
+            let journal_path = wallet_cfg.journal_file.as_ref()
+                .ok_or_else(|| anyhow::anyhow!(
+                    "wallet '{}' has no journal_file configured", wallet_cfg.wallet
+                ))?;
+
+            if !journal_path.exists() {
+                anyhow::bail!("journal file does not exist: {}", journal_path.display());
+            }
+
+            let bip329_content = match &file {
+                Some(path) => std::fs::read_to_string(path)?,
+                None => {
+                    let mut buf = String::new();
+                    std::io::stdin().read_to_string(&mut buf)?;
+                    buf
+                }
+            };
+
+            let journal_content = std::fs::read_to_string(journal_path)?;
+            let updated = import::import_from_str(&journal_content, &bip329_content, override_existing)?;
+            std::fs::write(journal_path, updated)?;
+
+            tracing::info!("labels imported into {}", journal_path.display());
         }
-        Command::Export { file: _ } => {
-            todo!("export")
+        Command::Export { file, wallet, config: config_file } => {
+            let config_path = config_file.unwrap_or_else(config::config_path);
+            let cfg = config::load(&config_path)?;
+
+            let wallet_cfg = match wallet {
+                Some(ref name) => cfg.wallets.get(name)
+                    .ok_or_else(|| anyhow::anyhow!("wallet '{name}' not found in config"))?,
+                None => match cfg.wallets.len() {
+                    0 => anyhow::bail!("no wallets configured"),
+                    1 => cfg.wallets.values().next().unwrap(),
+                    _ => anyhow::bail!("multiple wallets configured, specify one with --wallet"),
+                },
+            };
+
+            let journal_path = wallet_cfg.journal_file.as_ref()
+                .ok_or_else(|| anyhow::anyhow!(
+                    "wallet '{}' has no journal_file configured", wallet_cfg.wallet
+                ))?;
+
+            if !journal_path.exists() {
+                anyhow::bail!("journal file does not exist: {}", journal_path.display());
+            }
+
+            let journal_content = std::fs::read_to_string(journal_path)?;
+            let bip329_output = export::export_to_string(&journal_content)?;
+
+            match file {
+                Some(path) => std::fs::write(&path, bip329_output)?,
+                None => print!("{bip329_output}"),
+            }
         }
     }
 
