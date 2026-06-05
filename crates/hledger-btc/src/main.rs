@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::io::BufWriter;
+use std::process::Stdio;
 use tracing_subscriber::EnvFilter;
 
 use hledger_btc_core::{config, journal, receive, scan};
@@ -85,31 +86,43 @@ fn main() -> Result<()> {
             let config_path = config_file.unwrap_or_else(config::config_path);
             let cfg = config::load(&config_path)?;
 
+            // Scan all wallets first, then merge so inter-wallet transfers become
+            // a single transaction instead of being deduplicated away.
+            let mut raw: Vec<journal::JournalEntry> = Vec::new();
             for wallet_cfg in cfg.wallets.values() {
-                let entries = scan::scan(wallet_cfg)?;
+                raw.extend(scan::scan(wallet_cfg)?);
+            }
+            let all_entries = journal::merge_by_txid(raw);
 
-                match &wallet_cfg.journal_file {
-                    Some(path) => {
-                        let known = if path.exists() {
-                            journal::read_txids(std::fs::File::open(path)?)?
-                        } else {
-                            std::collections::HashSet::new()
-                        };
-                        let new_entries: Vec<_> = entries.into_iter()
-                            .filter(|e| {
-                                e.tags.0.iter()
-                                    .find(|(k, _)| k == "txid")
-                                    .map_or(true, |(_, v)| !known.contains(v))
-                            })
-                            .collect();
-                        tracing::info!("{} new entries, {} already in journal", new_entries.len(), known.len());
-                        if !new_entries.is_empty() {
-                            let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
-                            journal::write_entries(&new_entries, &mut BufWriter::new(file))?;
-                        }
-                    }
-                    None => {
-                        journal::write_entries(&entries, &mut std::io::stdout())?;
+            // Use the first wallet with a journal_file as the write target.
+            match cfg.wallets.values().find(|w| w.journal_file.is_some()) {
+                None => {
+                    journal::write_entries(&all_entries, &mut std::io::stdout())?;
+                }
+                Some(write_cfg) => {
+                    let read_path = write_cfg.journal_file.as_ref().unwrap();
+                    let write_path = write_cfg.output_file.as_ref().unwrap_or(read_path);
+
+                    tracing::info!("reading known txids via hledger from {:?}", read_path);
+                    let known = {
+                        let child = std::process::Command::new("hledger")
+                            .args(["-f", read_path.to_str().unwrap(), "print"])
+                            .stdout(Stdio::piped())
+                            .spawn()?;
+                        journal::read_txids(child.stdout.unwrap())?
+                    };
+
+                    let new_entries: Vec<_> = all_entries.into_iter()
+                        .filter(|e| {
+                            e.tags.0.iter()
+                                .find(|(k, _)| k == "txid")
+                                .map_or(true, |(_, v)| !known.contains(v))
+                        })
+                        .collect();
+                    tracing::info!("{} new entries, {} already in journal", new_entries.len(), known.len());
+                    if !new_entries.is_empty() {
+                        let file = std::fs::OpenOptions::new().create(true).append(true).open(write_path)?;
+                        journal::write_entries(&new_entries, &mut BufWriter::new(file))?;
                     }
                 }
             }

@@ -62,9 +62,12 @@ ext_descriptor = "wpkh([fingerprint/84'/0'/0']xprv.../0/*)"
 int_descriptor = "wpkh([fingerprint/84'/0'/0']xprv.../1/*)"  # optional, derived from ext if omitted
 client_type  = "electrum"
 server_url   = "tcp://my-electrum-server:50001"
-journal_file = "/home/user/finances/bitcoin.journal"  # optional, stdout if omitted
-account      = "assets:bitcoin:mywallet"              # optional, default: assets:bitcoin:<wallet>
+journal_file = "/home/user/finances/bitcoin.journal"      # read source for dedup; optional, stdout if omitted
+output_file  = "/home/user/finances/2026/bitcoin.journal" # optional, write target; defaults to journal_file
+account      = "assets:bitcoin:mywallet"                  # optional, default: assets:bitcoin:<wallet>
 ```
+
+`journal_file` is always read via `hledger print` (resolving any `include` directives) to determine which transactions are already recorded. New entries are written to `output_file` if set, otherwise back to `journal_file`.
 
 
 ## Give it a try
@@ -146,6 +149,15 @@ planned for a future release.
 | `dirs` | Platform config directory |
 | `anyhow` + `thiserror` | Error handling |
 | `tracing` + `tracing-subscriber` | Structured logging |
+
+## Troubleshooting
+
+**`Descriptor mismatch for External keychain`** — the descriptor in `wallets.toml` doesn't match the one stored in the wallet state file. This happens if you change or correct the descriptor after the wallet was first initialized. Delete the state file and rescan:
+
+```bash
+rm ~/.local/share/hledger-btc/<walletname>.db
+hledger-btc -v scan
+```
 
 ## License
 

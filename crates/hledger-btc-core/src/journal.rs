@@ -85,6 +85,56 @@ pub fn read_txids(reader: impl Read) -> Result<HashSet<String>> {
     Ok(txids)
 }
 
+/// Merges entries that share a txid (inter-wallet transfers) into a single entry.
+/// Auto-balance postings are dropped; if the combined explicit postings don't net to
+/// zero, a single auto-balance counterpart is re-added.
+pub fn merge_by_txid(entries: Vec<JournalEntry>) -> Vec<JournalEntry> {
+    let mut order: Vec<String> = Vec::new();
+    let mut grouped: std::collections::HashMap<String, Vec<JournalEntry>> = std::collections::HashMap::new();
+
+    for entry in entries {
+        let txid = entry.tags.0.iter()
+            .find(|(k, _)| k == "txid")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default();
+        if !grouped.contains_key(&txid) {
+            order.push(txid.clone());
+        }
+        grouped.entry(txid).or_default().push(entry);
+    }
+
+    let mut result: Vec<JournalEntry> = order.into_iter()
+        .map(|txid| {
+            let mut group = grouped.remove(&txid).unwrap();
+            if group.len() == 1 {
+                group.remove(0)
+            } else {
+                merge_wallet_entries(group)
+            }
+        })
+        .collect();
+
+    result.sort_by_key(|e| e.date);
+    result
+}
+
+fn merge_wallet_entries(entries: Vec<JournalEntry>) -> JournalEntry {
+    let date = entries[0].date;
+    let tags = entries[0].tags.clone();
+
+    let mut postings: Vec<Posting> = entries.into_iter()
+        .flat_map(|e| e.postings.into_iter())
+        .filter(|p| p.amount_sat.is_some())
+        .collect();
+
+    let sum: i64 = postings.iter().filter_map(|p| p.amount_sat).sum();
+    if sum != 0 {
+        postings.push(Posting::auto_balance(if sum < 0 { "expenses:unknown" } else { "income:unknown" }));
+    }
+
+    JournalEntry { date, description: "Transfer".to_string(), tags, postings }
+}
+
 pub fn write_entries(entries: &[JournalEntry], writer: &mut dyn Write) -> Result<()> {
     for entry in entries {
         write_entry(entry, writer)?;

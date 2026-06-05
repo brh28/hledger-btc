@@ -16,6 +16,7 @@ pub struct WalletConfig {
     pub client_type: ClientType,
     pub server_url: String,
     pub journal_file: Option<PathBuf>,
+    pub output_file: Option<PathBuf>,
     pub state_file: Option<PathBuf>,
     /// hledger account name (default: assets:bitcoin:<wallet>)
     pub account: Option<String>,
@@ -87,6 +88,7 @@ pub fn config_path() -> PathBuf {
 
 pub fn load(path: &PathBuf) -> anyhow::Result<Config> {
     anyhow::ensure!(path.exists(), "config not found at {path:?}");
+    tracing::info!("loading config from {:?}", path);
     check_permissions(path)?;
     let raw = std::fs::read_to_string(path)?;
     toml::from_str(&raw).map_err(Into::into)
