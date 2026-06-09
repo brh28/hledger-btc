@@ -2,11 +2,9 @@
 
 A Bitcoin accounting add-on for [hledger](https://hledger.org), written in Rust.
 
-Bitcoin records what happened on-chain; `hledger-btc` records what it means. It
+Bitcoin is the public ledger. Hledger is your personal ledger. `hledger-btc` bridges the two. It
 scans your wallets via Electrum, writes confirmed transactions as double-entry
-journal entries, and uses hledger as the accounting layer — giving you
-cost-basis tracking, price annotations, receivables, BIP329 label import/export,
-and the full suite of hledger reporting tools applied to your Bitcoin activity.
+journal entries — helping you track cost-basis', balances, cash flows, etc.
 
 ## Features
 
