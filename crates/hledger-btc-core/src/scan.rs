@@ -4,47 +4,45 @@ use bdk_wallet::{KeychainKind, Wallet};
 use bdk_wallet::bitcoin::{Address, Network, Transaction};
 use bdk_wallet::chain::ChainPosition;
 
-use crate::config::WalletConfig;
+use crate::config::{Config, WalletConfig};
 use crate::journal::{JournalEntry, Posting, TagMap};
 use crate::persist::WalletStore;
 
 const STOP_GAP: usize = 20;
 const BATCH_SIZE: usize = 5;
 
-pub fn scan(config: &WalletConfig) -> Result<Vec<JournalEntry>> {
-    let network: Network = config.network.into();
+pub fn scan(cfg: &Config, wallet: &WalletConfig) -> Result<Vec<JournalEntry>> {
+    let network: Network = cfg.network.into();
 
-    let mut db = WalletStore::load_or_create(&config.state_path())?;
+    let mut db = WalletStore::load_or_create(&wallet.state_path())?;
 
-    let mut wallet = match Wallet::load()
-        .descriptor(KeychainKind::External, Some(config.ext_descriptor.clone()))
-        .descriptor(KeychainKind::Internal, Some(config.int_descriptor()))
+    let mut bdk_wallet = match Wallet::load()
+        .descriptor(KeychainKind::External, Some(wallet.ext_descriptor.clone()))
+        .descriptor(KeychainKind::Internal, Some(wallet.int_descriptor()))
         .load_wallet(&mut db)?
     {
         Some(w) => {
-            tracing::info!("loaded wallet '{}' from state ({:?})", config.wallet, config.state_path());
+            tracing::info!("loaded wallet '{}' from state ({:?})", wallet.wallet, wallet.state_path());
             w
         }
         None => {
-            tracing::info!("initializing new wallet '{}' on {:?}", config.wallet, network);
-            Wallet::create(config.ext_descriptor.clone(), config.int_descriptor())
+            tracing::info!("initializing new wallet '{}' on {:?}", wallet.wallet, network);
+            Wallet::create(wallet.ext_descriptor.clone(), wallet.int_descriptor())
                 .network(network)
                 .create_wallet(&mut db)?
         }
     };
 
-    tracing::info!("connecting to {}", config.server_url);
-    let client = BdkElectrumClient::new(electrum_client::Client::new(&config.server_url)?);
+    tracing::info!("connecting to {}", cfg.server_url);
+    let client = BdkElectrumClient::new(electrum_client::Client::new(&cfg.server_url)?);
 
-    // fetch_prev_txouts=true fetches every input's previous output into the TxGraph so that
-    // wallet.calculate_fee() works on outgoing transactions with external inputs.
     tracing::info!("scanning blockchain (stop_gap={STOP_GAP})…");
-    let update = client.full_scan(wallet.start_full_scan(), STOP_GAP, BATCH_SIZE, true)?;
-    wallet.apply_update(update)?;
-    wallet.persist(&mut db)?;
+    let update = client.full_scan(bdk_wallet.start_full_scan(), STOP_GAP, BATCH_SIZE, true)?;
+    bdk_wallet.apply_update(update)?;
+    bdk_wallet.persist(&mut db)?;
 
-    let base = config.account_name();
-    let mut entries: Vec<JournalEntry> = wallet
+    let base = wallet.account_name(&cfg.base_account);
+    let mut entries: Vec<JournalEntry> = bdk_wallet
         .transactions()
         .filter_map(|tx| {
             let ChainPosition::Confirmed { anchor, .. } = tx.chain_position else {
@@ -52,7 +50,7 @@ pub fn scan(config: &WalletConfig) -> Result<Vec<JournalEntry>> {
             };
             let date = chrono::DateTime::from_timestamp(anchor.confirmation_time as i64, 0)?
                 .date_naive();
-            build_entry(tx.tx_node.tx.as_ref(), tx.tx_node.txid.to_string(), date, &wallet, &base, network)
+            build_entry(tx.tx_node.tx.as_ref(), tx.tx_node.txid.to_string(), date, &bdk_wallet, &base, network)
         })
         .collect();
 
@@ -72,19 +70,19 @@ fn build_entry(
     let mut postings: Vec<Posting> = Vec::new();
 
     // Positive postings: outputs going to wallet addresses.
-    for output in &tx.output {
+    for (vout, output) in tx.output.iter().enumerate() {
         if wallet.is_mine(output.script_pubkey.clone()) {
             if let Ok(addr) = Address::from_script(&output.script_pubkey, network) {
                 postings.push(Posting::with_amount(
                     format!("{base}:{addr}"),
                     output.value.to_sat() as i64,
-                ));
+                ).with_tags(TagMap::new().add("vout", vout.to_string())));
             }
         }
     }
 
     // Negative postings: inputs spending wallet UTXOs.
-    for input in &tx.input {
+    for (idx, input) in tx.input.iter().enumerate() {
         let prev_txid = input.previous_output.txid;
         let prev_vout = input.previous_output.vout as usize;
         if let Some(prev_tx) = wallet.tx_graph().get_tx(prev_txid) {
@@ -94,7 +92,7 @@ fn build_entry(
                         postings.push(Posting::with_amount(
                             format!("{base}:{addr}"),
                             -(prev_out.value.to_sat() as i64),
-                        ));
+                        ).with_tags(TagMap::new().add("input", idx.to_string())));
                     }
                 }
             }
@@ -112,7 +110,6 @@ fn build_entry(
         ("Outgoing BTC", "expenses:unknown")
     };
 
-    // For outgoing transactions, add an on-chain fee posting.
     if net < 0 {
         if let Ok(fee) = wallet.calculate_fee(tx) {
             let fee_sat = fee.to_sat() as i64;
@@ -122,7 +119,6 @@ fn build_entry(
         }
     }
 
-    // Auto-balance counterpart — hledger fills in the missing amount.
     postings.push(Posting::auto_balance(counterpart));
 
     Some(JournalEntry {

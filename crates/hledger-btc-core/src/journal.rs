@@ -59,6 +59,13 @@ impl Posting {
         self.price = price;
         self
     }
+
+    pub fn with_tags(mut self, tags: TagMap) -> Self {
+        self.tags = tags;
+        self
+    }
+
+
 }
 
 #[derive(Debug, Clone)]
@@ -157,10 +164,11 @@ fn write_entry(entry: &JournalEntry, w: &mut dyn Write) -> Result<()> {
                     Some(PriceAnnotation::Total(c)) => format!(" @@ {c}"),
                     None => String::new(),
                 };
+                let amount = fmt_sats(sats);
                 if posting.tags.is_empty() {
-                    writeln!(w, "    {}    {} SAT{}", posting.account, sats, price)?;
+                    writeln!(w, "    {}    {} sat{}", posting.account, amount, price)?;
                 } else {
-                    writeln!(w, "    {}    {} SAT{}  ; {}", posting.account, sats, price, posting.tags)?;
+                    writeln!(w, "    {}    {} sat{}  ; {}", posting.account, amount, price, posting.tags)?;
                 }
             }
             None => writeln!(w, "    {}", posting.account)?,
@@ -169,4 +177,15 @@ fn write_entry(entry: &JournalEntry, w: &mut dyn Write) -> Result<()> {
 
     writeln!(w)?;
     Ok(())
+}
+
+fn fmt_sats(sats: i64) -> String {
+    let s = sats.unsigned_abs().to_string();
+    let with_commas = s.as_bytes().rchunks(3)
+        .rev()
+        .map(std::str::from_utf8)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        .join(",");
+    if sats < 0 { format!("-{with_commas}") } else { with_commas }
 }

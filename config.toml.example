@@ -1,0 +1,11 @@
+# Copy to ~/.config/hledger-btc/config.toml
+
+network    = "bitcoin"               # bitcoin | testnet | signet | regtest
+server_url = "ssl://electrum.blockstream.info:50002"
+# client_type  = "electrum"         # optional, default: electrum
+# base_account = "assets:bitcoin"   # optional, default: assets:bitcoin
+
+[[wallets]]
+wallet         = "testwallet"
+ext_descriptor = "wpkh([73c5da0a/84h/0h/0h]xpub6CatWdiZiodmUeTDp8LT5or8nmbKNcuyvz7WyksVFkKB4RHwCD3XyuvPEbvqAQY3rAPshWcMLoP2fMFMKHPJ4ZeZXYVUhLv1VMrjPC7PW6V/0/*)"
+# int_descriptor is optional — derived from ext_descriptor if omitted

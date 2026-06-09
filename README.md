@@ -2,39 +2,68 @@
 
 A Bitcoin accounting add-on for [hledger](https://hledger.org), written in Rust.
 
-`hledger-btc` bridges your Bitcoin wallet and your hledger journal. It fetches
-confirmed transaction history from the blockchain and writes entries to your
-journal, with hledger as the single source of truth.
+Bitcoin records what happened on-chain; `hledger-btc` records what it means. It
+scans your wallets via Electrum, writes confirmed transactions as double-entry
+journal entries, and uses hledger as the accounting layer — giving you
+cost-basis tracking, price annotations, receivables, BIP329 label import/export,
+and the full suite of hledger reporting tools applied to your Bitcoin activity.
 
 ## Features
 
-- **`scan`** — fetch confirmed transactions for all configured wallets and write them to hledger journals
-- **`receive`** — derive a new receiving address and record it in the journal as a receivable
+- **`scan`** — fetch confirmed transactions for all configured wallets and write them to your journal
+- **`label`** — set the description or posting note on a transaction, address, or output/input
+- **`tag`** — attach hledger tags (`key:value`) to a transaction, address, or output/input
+- **`import`** — import [BIP329](https://github.com/bitcoin/bips/blob/master/bip-0329.mediawiki) labels into your journal
+- **`export`** — export your journal to BIP329 label format
+- **`receive`** — record a receiving address as a receivable in the journal
+- **`config`** — manage the electrum server and wallet configuration
 - **`trace`** — print the transaction history for a given address *(planned)*
-- **`import`** — import [BIP329](https://github.com/bitcoin/bips/blob/master/bip-0329.mediawiki) labels into your journal *(planned)*
-- **`export`** — export your journal to BIP329 label format *(planned)*
 
 ## Usage
 
 ```bash
-# Scan all wallets defined in ~/.config/hledger-btc/config.toml
+# Scan the blockchain for transactions
 hledger-btc scan
 
-# Override config file location
-hledger-btc scan --config /path/to/config.toml
+# Label a transaction (sets the description field)
+hledger-btc label tx <txid> "Coinbase reward"
 
-# Increase verbosity (-v info, -vv debug, -vvv trace)
-hledger-btc -v scan
+# Label an output or input (sets the posting free-text comment)
+hledger-btc label output <txid>:<vout> "savings deposit"
+hledger-btc label input <txid>:<index> "spending from savings"
+hledger-btc label addr <address> "cold storage"
 
-# Derive a new receiving address and record it as a receivable
-hledger-btc receive
+# Tag a transaction or posting with key:value data
+hledger-btc tag tx <txid> lot=20260608
+hledger-btc tag output <txid>:<vout> lot=20260608 cost=45000
+hledger-btc tag addr <address> lot=20260608
 
-# With metadata
-hledger-btc receive --description="Invoice 3" --amount=100000 --total-cost='USD 500.00'
+# Import BIP329 labels into your journal
+hledger-btc import labels.jsonl
 
-# Print transaction history for an address
-hledger-btc trace bc1q...
+# Export journal to BIP329 (stdout, or -o for a file)
+hledger-btc export -o labels.jsonl
+
+# Record an expected incoming payment
+hledger-btc receive --address bc1q... --description "Invoice 3" --amount 100000 --total-cost 'USD 500.00'
+
+# Config management
+hledger-btc config path
+hledger-btc config show
+hledger-btc config set --network bitcoin --server-url ssl://electrum.blockstream.info:50002
+hledger-btc config wallet add --name savings --descriptor "wpkh([df9d4f28/84h/0h/0h]xpub.../0/*)"
+hledger-btc config wallet remove --name savings
 ```
+
+### Journal file resolution
+
+All commands that read or write a journal use this fallback chain, mirroring hledger:
+
+1. `-f`/`--file` argument
+2. `LEDGER_FILE` environment variable
+3. `~/.hledger.journal`
+
+`scan` also accepts `-o`/`--output` to write new entries to a different file than the one used for dedup (useful for year-split journal setups).
 
 ## Installation
 
@@ -48,79 +77,99 @@ cargo install --path crates/hledger-btc
 
 ## Configuration
 
-Config lives at `~/.config/hledger-btc/wallets.toml`. It may contain private
-key material — restrict permissions with `chmod 600`. The tool warns on startup
-if the file is group- or world-readable.
-
-Each wallet is a `[wallets.<name>]` section:
+Config lives at `~/.config/hledger-btc/config.toml`.
 
 ```toml
-[wallets.mywallet]
-wallet       = "mywallet"
-network      = "bitcoin"          # bitcoin | testnet | signet | regtest
-ext_descriptor = "wpkh([fingerprint/84'/0'/0']xprv.../0/*)"
-int_descriptor = "wpkh([fingerprint/84'/0'/0']xprv.../1/*)"  # optional, derived from ext if omitted
-client_type  = "electrum"
-server_url   = "tcp://my-electrum-server:50001"
-journal_file = "/home/user/finances/bitcoin.journal"      # read source for dedup; optional, stdout if omitted
-output_file  = "/home/user/finances/2026/bitcoin.journal" # optional, write target; defaults to journal_file
-account      = "assets:bitcoin:mywallet"                  # optional, default: assets:bitcoin:<wallet>
+network    = "bitcoin"               # bitcoin | testnet | signet | regtest
+server_url = "ssl://electrum.blockstream.info:50002"
+# client_type  = "electrum"         # optional, default: electrum
+# base_account = "assets:bitcoin"   # optional, default: assets:bitcoin
+
+[[wallets]]
+wallet         = "savings"
+ext_descriptor = "wpkh([df9d4f28/84h/0h/0h]xpub.../0/*)"
+# int_descriptor is optional — derived from ext_descriptor if omitted
+
+[[wallets]]
+wallet         = "spending"
+ext_descriptor = "wpkh([ab1c2d3e/84h/0h/0h]xpub.../0/*)"
 ```
 
-`journal_file` is always read via `hledger print` (resolving any `include` directives) to determine which transactions are already recorded. New entries are written to `output_file` if set, otherwise back to `journal_file`.
-
+`base_account` is the account prefix for all wallet and `receive` postings. Each
+wallet's account defaults to `<base_account>:<wallet>`, e.g. `assets:bitcoin:savings`.
 
 ## Give it a try
 
 A working example is provided in [`wallets.toml.example`](wallets.toml.example).
 
-1. Set config: `cp wallets.toml.example  ~/.config/hledger-btc/wallets.toml`
-2. Run: `cargo run -- scan` 
+1. Set config: `cp wallets.toml.example ~/.config/hledger-btc/config.toml`
+2. Run: `cargo run -- scan`
 3. Verify:
 ```
-➜ alias hl-test="hledger -f /tmp/testwallet.journal" 
+➜ alias hl-test="hledger -f /tmp/testwallet.journal"
 ➜ hl-test bal
-         3355645 SAT  expenses:fees:onchain
-         2227326 SAT  expenses:unknown
-        -5582971 SAT  income:unknown
+         3,355,645 sat  expenses:fees:onchain
+         2,227,326 sat  expenses:unknown
+        -5,582,971 sat  income:unknown
 --------------------
-                   0  
+                   0
+
 ➜ hl-test print bc1qfp32zz2wenptc9nvu7v9qedhf8vdkufljq8qzx
 2026-05-02 * Outgoing BTC  ; txid:9f3e90d36c37cc5025dce7a3fedabcace7e6391470642e148a4927ba268b47>
-    assets:bitcoin:testwallet:bc1qfp32zz2wenptc9nvu7v9qedhf8vdkufljq8qzx       -4000 SAT
-    expenses:fees:onchain                                                       3960 SAT
+    assets:bitcoin:testwallet:bc1qfp32zz2wenptc9nvu7v9qedhf8vdkufljq8qzx       -4,000 sat  ; input:0
+    expenses:fees:onchain                                                        3,960 sat
     expenses:unknown
- 
+
 2026-05-02 * Incoming BTC  ; txid:8cae3bef307ca4b3bf7a6461d94352e98b38a39a6a39205ad5528fddcf49fa>
-    assets:bitcoin:testwallet:bc1qfp32zz2wenptc9nvu7v9qedhf8vdkufljq8qzx        4000 SAT
+    assets:bitcoin:testwallet:bc1qfp32zz2wenptc9nvu7v9qedhf8vdkufljq8qzx        4,000 sat  ; vout:1
     income:unknown
 ```
 
 ## Design
 
-### hledger as source of truth
-
-`hledger-btc` does not maintain its own UTXO set or transaction database. The
-journal file is the store. On each sync the tool scans the blockchain via
-Electrum, builds journal entries from confirmed transactions, and writes them to
-the configured file.
-
 ### Per-address sub-accounts
 
 Each Bitcoin address becomes a sub-account under the wallet account (e.g.
-`assets:bitcoin:mywallet:bc1q...`). This makes it possible to track which
+`assets:bitcoin:savings:bc1q...`). This makes it possible to track which
 address holds or spent funds, audit individual UTXOs, and produce accurate
 per-address balance reports in hledger.
 
-### SAT accounting
+### sat accounting
 
 All amounts are recorded in satoshis to avoid floating-point imprecision.
 
-### BIP329 *(planned)*
+### Machine-managed fields
+
+`scan` writes structural tags that `label`, `tag`, `import`, and `export` depend on.
+**Do not remove or rename these fields in the journal:**
+
+| Field | Where | Purpose |
+|---|---|---|
+| `txid:` | transaction comment | links entries across commands |
+| `vout:N` | output posting comment | identifies the transaction output (outpoint index) |
+| `input:N` | input posting comment | identifies the transaction input being spent |
+| address sub-account | posting account name | e.g. `assets:bitcoin:savings:bc1q...` |
+
+Everything else — the description, posting free-text, and any user-defined tags — is safe to edit freely. Use `label` and `tag` commands rather than hand-editing to reduce the risk of accidentally modifying structural fields.
+
+### BIP329
 
 [BIP329](https://github.com/bitcoin/bips/blob/master/bip-0329.mediawiki) is a
-standard JSONL format for wallet labels. `import` and `export` subcommands are
-planned for a future release.
+standard JSONL format for wallet labels. `import` annotates existing journal
+entries with labels as hledger tags; `export` reads those tags back out.
+
+All four BIP329 record types are supported:
+
+| Type | Ref format | Maps to |
+|---|---|---|
+| `tx` | txid | transaction description |
+| `addr` | address | posting free-text comment |
+| `output` | txid:vout | output posting free-text comment |
+| `input` | txid:index | input posting free-text comment |
+
+Extra hledger tags (e.g. `lot:20260608`) are round-tripped via a non-spec
+`tags` field that other BIP329 clients will safely ignore. Records with neither
+a label nor tags are omitted from export.
 
 ## Project status
 
@@ -128,12 +177,13 @@ planned for a future release.
 |---|---|---|
 | 1 — Scaffold | ✅ | Workspace, CLI, config, logging |
 | 2 — Scan | ✅ | Electrum scan, per-address postings, fee extraction |
-| 3 — Receive | ✅ | Address derivation, receivable journal entries |
-| 4 — Trace | 🔲 | Per-address transaction history |
-| 5 — Import | 🔲 | BIP329 → hledger |
-| 6 — Export | 🔲 | hledger → BIP329 |
-| 7 — Tests | 🔲 | Unit tests for journal formatting and receive entry construction; integration tests for scan against regtest |
-| 8 — Polish | 🔲 | CI, crates.io publish |
+| 3 — Receive | ✅ | Receivable journal entries |
+| 4 — BIP329 Import | ✅ | BIP329 → hledger journal |
+| 5 — BIP329 Export | ✅ | hledger journal → BIP329 |
+| 6 — Label / Tag | ✅ | CLI commands for annotating transactions and postings |
+| 7 — Trace | 🔲 | Per-address transaction history |
+| 8 — Tests | 🔲 | Integration tests against regtest |
+| 9 — Polish | 🔲 | CI, crates.io publish |
 
 ## Dependencies
 
@@ -142,22 +192,14 @@ planned for a future release.
 | `bdk_wallet` | Descriptor parsing, address derivation, fee calculation |
 | `bdk_electrum` | Electrum blockchain backend |
 | `bdk_file_store` | Persistent wallet state (keychain index, UTXO graph) |
+| `bip329` | BIP329 record types and JSONL serialization |
 | `clap` | CLI argument parsing |
 | `serde` + `toml` | Config serialization |
+| `serde_json` | BIP329 JSONL serialization |
 | `chrono` | Date formatting |
-| `keyring` | OS keychain integration |
 | `dirs` | Platform config directory |
 | `anyhow` + `thiserror` | Error handling |
 | `tracing` + `tracing-subscriber` | Structured logging |
-
-## Troubleshooting
-
-**`Descriptor mismatch for External keychain`** — the descriptor in `wallets.toml` doesn't match the one stored in the wallet state file. This happens if you change or correct the descriptor after the wallet was first initialized. Delete the state file and rescan:
-
-```bash
-rm ~/.local/share/hledger-btc/<walletname>.db
-hledger-btc -v scan
-```
 
 ## License
 
