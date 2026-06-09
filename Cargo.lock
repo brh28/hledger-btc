@@ -547,7 +547,9 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "dirs",
  "hledger-btc-core",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]
@@ -565,6 +567,7 @@ dependencies = [
  "dirs",
  "keyring",
  "serde",
+ "serde_json",
  "thiserror",
  "toml",
  "tracing",

@@ -1,4 +1,6 @@
+pub mod annotate;
 pub mod config;
+pub mod label;
 pub mod export;
 pub mod import;
 pub mod journal;
