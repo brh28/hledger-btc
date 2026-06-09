@@ -15,7 +15,7 @@ journal entries — helping you track cost-basis', balances, cash flows, etc.
 - **`export`** — export your journal to BIP329 label format
 - **`receive`** — record a receiving address as a receivable in the journal
 - **`config`** — manage the electrum server and wallet configuration
-- **`trace`** — print the transaction history for a given address *(planned)*
+- **`trace`** — recursively print transactions associated with an address to trace it's history
 
 ## Usage
 
@@ -44,6 +44,9 @@ hledger-btc export -o labels.jsonl
 
 # Record an expected incoming payment
 hledger-btc receive --address bc1q... --description "Invoice 3" --amount 100000 --total-cost 'USD 500.00'
+
+# Trace the visibility footprint of an address
+hledger-btc trace bc1q...
 
 # Config management
 hledger-btc config path
@@ -179,7 +182,7 @@ a label nor tags are omitted from export.
 | 4 — BIP329 Import | ✅ | BIP329 → hledger journal |
 | 5 — BIP329 Export | ✅ | hledger journal → BIP329 |
 | 6 — Label / Tag | ✅ | CLI commands for annotating transactions and postings |
-| 7 — Trace | 🔲 | Per-address transaction history |
+| 7 — Trace | ✅ | Per-address visibility footprint |
 | 8 — Tests | 🔲 | Integration tests against regtest |
 | 9 — Polish | 🔲 | CI, crates.io publish |
 

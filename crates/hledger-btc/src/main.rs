@@ -7,7 +7,7 @@ use std::process::Stdio;
 use tracing_subscriber::EnvFilter;
 
 use std::collections::BTreeMap;
-use hledger_btc_core::{annotate::{Annotation, AnnotationType}, config, export, import, journal, label, receive, scan};
+use hledger_btc_core::{annotate::{Annotation, AnnotationType}, config, export, import, journal, label, receive, scan, trace};
 
 #[derive(Parser)]
 #[command(name = "hledger-btc", about = "Bitcoin accounting for hledger")]
@@ -69,10 +69,14 @@ enum Command {
         #[arg(long, conflicts_with = "unit_price")]
         total_cost: Option<String>,
     },
-    /// Print the transaction history for a given address
+    /// Print the visibility footprint for a given address
     Trace {
         /// Bitcoin address to trace
         address: String,
+
+        /// Journal file; falls back to LEDGER_FILE, then ~/.hledger.journal
+        #[arg(short = 'f', long = "file")]
+        journal: Option<PathBuf>,
     },
     /// Import BIP329 labels into hledger journal
     Import {
@@ -314,8 +318,23 @@ fn main() -> Result<()> {
             let file = std::fs::OpenOptions::new().create(true).append(true).open(&journal_path)?;
             journal::write_entries(&[entry], &mut BufWriter::new(file))?;
         }
-        Command::Trace { address: _ } => {
-            todo!("trace")
+        Command::Trace { address, journal } => {
+            let journal_path = resolve_journal(journal);
+            let output = std::process::Command::new("hledger")
+                .args(["-f", journal_path.to_str().unwrap(), "print"])
+                .output()?;
+            if !output.status.success() {
+                anyhow::bail!("hledger print failed: {}", String::from_utf8_lossy(&output.stderr));
+            }
+            let content = String::from_utf8(output.stdout)?;
+            let blocks = trace::trace(&content, &address);
+            if blocks.is_empty() {
+                println!("Address not found in journal: {address}");
+            } else {
+                for block in &blocks {
+                    println!("{block}\n");
+                }
+            }
         }
         Command::Import { journal, labels, override_existing } => {
             let journal_path = resolve_journal(journal);
