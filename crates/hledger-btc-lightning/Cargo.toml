@@ -1,0 +1,12 @@
+[package]
+name = "hledger-btc-lightning"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hledger-btc-core = { path = "../hledger-btc-core" }
+csv.workspace = true
+serde.workspace = true
+chrono.workspace = true
+anyhow.workspace = true
+tracing.workspace = true

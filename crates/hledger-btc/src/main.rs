@@ -8,6 +8,7 @@ use tracing_subscriber::EnvFilter;
 
 use std::collections::BTreeMap;
 use hledger_btc_core::{annotate::{Annotation, AnnotationType}, config, export, import, journal, label, receive, scan, trace};
+use hledger_btc_lightning::phoenix;
 
 #[derive(Parser)]
 #[command(name = "hledger-btc", about = "Bitcoin accounting for hledger")]
@@ -126,10 +127,45 @@ enum Command {
         #[command(subcommand)]
         subcommand: TagSubcommand,
     },
+    /// Import Lightning wallet data into hledger journal
+    Lightning {
+        #[command(subcommand)]
+        subcommand: LightningSubcommand,
+    },
     /// Manage the hledger-btc configuration file
     Config {
         #[command(subcommand)]
         subcommand: ConfigSubcommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum LightningSubcommand {
+    /// Import Lightning payment history from a CSV or external source
+    Import {
+        #[command(subcommand)]
+        subcommand: LightningImportSubcommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum LightningImportSubcommand {
+    /// Import a Phoenix wallet CSV export
+    Phoenix {
+        /// CSV file exported from Phoenix
+        csv: PathBuf,
+
+        /// Journal file to read for dedup; falls back to LEDGER_FILE, then ~/.hledger.journal
+        #[arg(short = 'f', long = "file")]
+        journal: Option<PathBuf>,
+
+        /// Journal file to append new entries to; defaults to -f
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+
+        /// Wallet name; derives account as {base_account}:lightning:{name} (default: phoenix)
+        #[arg(long, default_value = "phoenix")]
+        name: String,
     },
 }
 
@@ -398,6 +434,50 @@ fn main() -> Result<()> {
             };
             let annotation = Annotation { type_, ref_, label: None, tags: parse_assignments(assignments)? };
             write_annotation(&journal_path, annotation, override_existing)?;
+        }
+        Command::Lightning { subcommand } => match subcommand {
+            LightningSubcommand::Import { subcommand } => match subcommand {
+                LightningImportSubcommand::Phoenix { csv, journal, output, name } => {
+                    let cfg = config::load(&config_path)?;
+                    let account = format!("{}:lightning:{name}", cfg.base_account);
+
+                    let journal_path = resolve_journal(journal);
+                    let output_path = output.unwrap_or_else(|| journal_path.clone());
+
+                    let content = if journal_path.exists() {
+                        let out = std::process::Command::new("hledger")
+                            .args(["-f", journal_path.to_str().unwrap(), "print"])
+                            .output()?
+                            .stdout;
+                        String::from_utf8(out)?
+                    } else {
+                        String::new()
+                    };
+                    let known_payment_hashes =
+                        journal::read_tag_values(content.as_bytes(), "payment_hash")?;
+                    let known_txids = journal::read_tag_values(content.as_bytes(), "txid")?;
+
+                    let all_entries = phoenix::import(&csv, &account)?;
+                    let new_entries: Vec<_> = all_entries
+                        .into_iter()
+                        .filter(|e| {
+                            let ph = e.tags.get("payment_hash");
+                            let txid = e.tags.get("txid");
+                            ph.map_or(true, |v| !known_payment_hashes.contains(v))
+                                && txid.map_or(true, |v| !known_txids.contains(v))
+                        })
+                        .collect();
+
+                    tracing::info!("{} new entries to write", new_entries.len());
+                    if !new_entries.is_empty() {
+                        let file = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&output_path)?;
+                        journal::write_entries(&new_entries, &mut BufWriter::new(file))?;
+                    }
+                }
+            }
         }
         Command::Config { subcommand } => match subcommand {
             ConfigSubcommand::Path => {

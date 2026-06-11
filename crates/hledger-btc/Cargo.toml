@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 hledger-btc-core = { path = "../hledger-btc-core" }
+hledger-btc-lightning = { path = "../hledger-btc-lightning" }
 clap.workspace = true
 anyhow.workspace = true
 chrono.workspace = true

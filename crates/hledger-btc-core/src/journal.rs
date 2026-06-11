@@ -20,6 +20,10 @@ impl TagMap {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.0.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+    }
 }
 
 impl fmt::Display for TagMap {
@@ -76,20 +80,25 @@ pub struct JournalEntry {
     pub postings: Vec<Posting>,
 }
 
-pub fn read_txids(reader: impl Read) -> Result<HashSet<String>> {
-    let mut txids = HashSet::new();
+pub fn read_tag_values(reader: impl Read, tag: &str) -> Result<HashSet<String>> {
+    let prefix = format!("{tag}:");
+    let mut values = HashSet::new();
     for line in BufReader::new(reader).lines() {
         let line = line?;
         if line.starts_with(' ') || line.starts_with('\t') || line.is_empty() {
             continue;
         }
-        if let Some(pos) = line.find("txid:") {
-            let rest = &line[pos + 5..];
+        if let Some(pos) = line.find(&prefix) {
+            let rest = &line[pos + prefix.len()..];
             let end = rest.find([',', ' ']).unwrap_or(rest.len());
-            txids.insert(rest[..end].to_string());
+            values.insert(rest[..end].to_string());
         }
     }
-    Ok(txids)
+    Ok(values)
+}
+
+pub fn read_txids(reader: impl Read) -> Result<HashSet<String>> {
+    read_tag_values(reader, "txid")
 }
 
 /// Merges entries that share a txid (inter-wallet transfers) into a single entry.
