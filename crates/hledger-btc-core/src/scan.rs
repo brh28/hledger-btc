@@ -5,11 +5,30 @@ use bdk_wallet::bitcoin::{Address, Network, Transaction};
 use bdk_wallet::chain::ChainPosition;
 
 use crate::config::{Config, WalletConfig};
-use crate::journal::{JournalEntry, Posting, TagMap};
+use crate::journal::{Account, JournalEntry, Posting, TagMap};
 use crate::persist::WalletStore;
 
 const STOP_GAP: usize = 20;
 const BATCH_SIZE: usize = 5;
+
+/// The built-in on-chain source: scans every configured wallet via Electrum.
+pub struct ElectrumSource<'a> {
+    pub cfg: &'a Config,
+}
+
+impl crate::source::Source for ElectrumSource<'_> {
+    fn name(&self) -> &str {
+        "electrum"
+    }
+
+    fn entries(&self) -> Result<Vec<JournalEntry>> {
+        let mut all = Vec::new();
+        for wallet in &self.cfg.wallets {
+            all.extend(scan(self.cfg, wallet)?);
+        }
+        Ok(all)
+    }
+}
 
 pub fn scan(cfg: &Config, wallet: &WalletConfig) -> Result<Vec<JournalEntry>> {
     let network: Network = cfg.network.into();
@@ -64,7 +83,7 @@ fn build_entry(
     txid: String,
     date: chrono::NaiveDate,
     wallet: &Wallet,
-    base: &str,
+    base: &Account,
     network: Network,
 ) -> Option<JournalEntry> {
     let mut postings: Vec<Posting> = Vec::new();
@@ -74,7 +93,7 @@ fn build_entry(
         if wallet.is_mine(output.script_pubkey.clone()) {
             if let Ok(addr) = Address::from_script(&output.script_pubkey, network) {
                 postings.push(Posting::with_amount(
-                    format!("{base}:{addr}"),
+                    base.append(addr.to_string()),
                     output.value.to_sat() as i64,
                 ).with_tags(TagMap::new().add("vout", vout.to_string())));
             }
@@ -90,7 +109,7 @@ fn build_entry(
                 if wallet.is_mine(prev_out.script_pubkey.clone()) {
                     if let Ok(addr) = Address::from_script(&prev_out.script_pubkey, network) {
                         postings.push(Posting::with_amount(
-                            format!("{base}:{addr}"),
+                            base.append(addr.to_string()),
                             -(prev_out.value.to_sat() as i64),
                         ).with_tags(TagMap::new().add("input", idx.to_string())));
                     }

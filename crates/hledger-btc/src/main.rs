@@ -3,12 +3,12 @@ use clap::{Parser, Subcommand};
 use std::io::BufWriter;
 use std::io::Read;
 use std::path::PathBuf;
-use std::process::Stdio;
 use tracing_subscriber::EnvFilter;
 
 use std::collections::BTreeMap;
-use hledger_btc_core::{annotate::{Annotation, AnnotationType}, config, export, import, journal, label, receive, scan, trace};
-use hledger_btc_lightning::phoenix;
+use hledger_btc_core::{annotate::{Annotation, AnnotationType}, config, export, import, journal, label, receive, trace};
+
+mod sources;
 
 #[derive(Parser)]
 #[command(name = "hledger-btc", about = "Bitcoin accounting for hledger")]
@@ -26,7 +26,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Scan confirmed transactions for all wallets and write hledger journals
+    /// Scan all configured data sources and write new entries to the journal
     Scan {
         /// Journal file to read for dedup; falls back to LEDGER_FILE, then ~/.hledger.journal
         #[arg(short = 'f', long = "file")]
@@ -35,6 +35,10 @@ enum Command {
         /// Journal file to append new entries to; defaults to the value of -f/--file
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
+
+        /// Scan a single named source instead of all
+        #[arg(long)]
+        source: Option<String>,
     },
     /// Record a receiving address as a receivable in the journal
     Receive {
@@ -107,10 +111,6 @@ enum Command {
         #[arg(short = 'f', long = "file")]
         journal: Option<PathBuf>,
 
-        /// Replace existing label instead of skipping already-labelled entries
-        #[arg(long = "override")]
-        override_existing: bool,
-
         #[command(subcommand)]
         subcommand: LabelSubcommand,
     },
@@ -127,45 +127,10 @@ enum Command {
         #[command(subcommand)]
         subcommand: TagSubcommand,
     },
-    /// Import Lightning wallet data into hledger journal
-    Lightning {
-        #[command(subcommand)]
-        subcommand: LightningSubcommand,
-    },
     /// Manage the hledger-btc configuration file
     Config {
         #[command(subcommand)]
         subcommand: ConfigSubcommand,
-    },
-}
-
-#[derive(Subcommand)]
-enum LightningSubcommand {
-    /// Import Lightning payment history from a CSV or external source
-    Import {
-        #[command(subcommand)]
-        subcommand: LightningImportSubcommand,
-    },
-}
-
-#[derive(Subcommand)]
-enum LightningImportSubcommand {
-    /// Import a Phoenix wallet CSV export
-    Phoenix {
-        /// CSV file exported from Phoenix
-        csv: PathBuf,
-
-        /// Journal file to read for dedup; falls back to LEDGER_FILE, then ~/.hledger.journal
-        #[arg(short = 'f', long = "file")]
-        journal: Option<PathBuf>,
-
-        /// Journal file to append new entries to; defaults to -f
-        #[arg(short = 'o', long)]
-        output: Option<PathBuf>,
-
-        /// Wallet name; derives account as {base_account}:lightning:{name} (default: phoenix)
-        #[arg(long, default_value = "phoenix")]
-        name: String,
     },
 }
 
@@ -219,6 +184,17 @@ enum ConfigSubcommand {
         #[command(subcommand)]
         subcommand: WalletSubcommand,
     },
+    /// Manage data sources in the configuration
+    Source {
+        #[command(subcommand)]
+        subcommand: SourceSubcommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum SourceSubcommand {
+    /// List configured data sources
+    List,
 }
 
 #[derive(Subcommand)]
@@ -296,43 +272,24 @@ fn main() -> Result<()> {
     let config_path = resolve_config(cli.config);
 
     match cli.command {
-        Command::Scan { journal, output } => {
+        Command::Scan { journal, output, source } => {
             let cfg = config::load(&config_path)?;
-
-            let mut raw: Vec<journal::JournalEntry> = Vec::new();
-            for wallet_cfg in &cfg.wallets {
-                raw.extend(scan::scan(&cfg, wallet_cfg)?);
+            let mut srcs = sources::build(&cfg)?;
+            if let Some(name) = source {
+                anyhow::ensure!(
+                    srcs.iter().any(|s| s.name() == name),
+                    "unknown source '{name}' (see `hledger-btc config source list`)"
+                );
+                srcs.retain(|s| s.name() == name);
             }
-            let all_entries = journal::merge_by_txid(raw);
 
             let journal_path = resolve_journal(journal);
             let output_path = output.unwrap_or_else(|| journal_path.clone());
-
-            tracing::info!("reading known txids via hledger from {:?}", journal_path);
-            let known = {
-                let child = std::process::Command::new("hledger")
-                    .args(["-f", journal_path.to_str().unwrap(), "print"])
-                    .stdout(Stdio::piped())
-                    .spawn()?;
-                journal::read_txids(child.stdout.unwrap())?
-            };
-
-            let new_entries: Vec<_> = all_entries.into_iter()
-                .filter(|e| {
-                    e.tags.0.iter()
-                        .find(|(k, _)| k == "txid")
-                        .map_or(true, |(_, v)| !known.contains(v))
-                })
-                .collect();
-            tracing::info!("{} new entries, {} already in journal", new_entries.len(), known.len());
-            if !new_entries.is_empty() {
-                let file = std::fs::OpenOptions::new().create(true).append(true).open(&output_path)?;
-                journal::write_entries(&new_entries, &mut BufWriter::new(file))?;
-            }
+            sources::run_pipeline(&srcs, &journal_path, &output_path)?;
         }
         Command::Receive { journal, address, account, date, description, amount, unit_price, total_cost } => {
             let resolved_account = account.or_else(|| {
-                config::load(&config_path).ok().map(|cfg| cfg.base_account)
+                config::load(&config_path).ok().map(|cfg| cfg.base_account.to_string())
             });
 
             let price = match (unit_price, total_cost) {
@@ -409,7 +366,7 @@ fn main() -> Result<()> {
                 None => print!("{bip329_output}"),
             }
         }
-        Command::Label { journal, subcommand, .. } => {
+        Command::Label { journal, subcommand } => {
             let journal_path = resolve_journal(journal);
             if !journal_path.exists() {
                 anyhow::bail!("journal file does not exist: {}", journal_path.display());
@@ -434,50 +391,6 @@ fn main() -> Result<()> {
             };
             let annotation = Annotation { type_, ref_, label: None, tags: parse_assignments(assignments)? };
             write_annotation(&journal_path, annotation, override_existing)?;
-        }
-        Command::Lightning { subcommand } => match subcommand {
-            LightningSubcommand::Import { subcommand } => match subcommand {
-                LightningImportSubcommand::Phoenix { csv, journal, output, name } => {
-                    let cfg = config::load(&config_path)?;
-                    let account = format!("{}:lightning:{name}", cfg.base_account);
-
-                    let journal_path = resolve_journal(journal);
-                    let output_path = output.unwrap_or_else(|| journal_path.clone());
-
-                    let content = if journal_path.exists() {
-                        let out = std::process::Command::new("hledger")
-                            .args(["-f", journal_path.to_str().unwrap(), "print"])
-                            .output()?
-                            .stdout;
-                        String::from_utf8(out)?
-                    } else {
-                        String::new()
-                    };
-                    let known_payment_hashes =
-                        journal::read_tag_values(content.as_bytes(), "payment_hash")?;
-                    let known_txids = journal::read_tag_values(content.as_bytes(), "txid")?;
-
-                    let all_entries = phoenix::import(&csv, &account)?;
-                    let new_entries: Vec<_> = all_entries
-                        .into_iter()
-                        .filter(|e| {
-                            let ph = e.tags.get("payment_hash");
-                            let txid = e.tags.get("txid");
-                            ph.map_or(true, |v| !known_payment_hashes.contains(v))
-                                && txid.map_or(true, |v| !known_txids.contains(v))
-                        })
-                        .collect();
-
-                    tracing::info!("{} new entries to write", new_entries.len());
-                    if !new_entries.is_empty() {
-                        let file = std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(&output_path)?;
-                        journal::write_entries(&new_entries, &mut BufWriter::new(file))?;
-                    }
-                }
-            }
         }
         Command::Config { subcommand } => match subcommand {
             ConfigSubcommand::Path => {
@@ -516,6 +429,18 @@ fn main() -> Result<()> {
                 std::fs::write(&config_path, toml::to_string_pretty(&value)?)?;
                 println!("config written to {}", config_path.display());
             }
+            ConfigSubcommand::Source { subcommand: source_sub } => match source_sub {
+                SourceSubcommand::List => {
+                    let cfg = config::load(&config_path)?;
+                    if !cfg.wallets.is_empty() {
+                        let wallets: Vec<&str> = cfg.wallets.iter().map(|w| w.wallet.as_str()).collect();
+                        println!("electrum (built-in): wallets {}", wallets.join(", "));
+                    }
+                    for s in &cfg.sources {
+                        println!("{} ({}): {}", s.name, s.type_, s.path.display());
+                    }
+                }
+            },
             ConfigSubcommand::Wallet { subcommand: wallet_sub } => match wallet_sub {
                 WalletSubcommand::Add { name, descriptor } => {
                     let mut cfg = config::load(&config_path)?;

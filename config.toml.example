@@ -9,3 +9,10 @@ server_url = "ssl://electrum.blockstream.info:50002"
 wallet         = "testwallet"
 ext_descriptor = "wpkh([73c5da0a/84h/0h/0h]xpub6CatWdiZiodmUeTDp8LT5or8nmbKNcuyvz7WyksVFkKB4RHwCD3XyuvPEbvqAQY3rAPshWcMLoP2fMFMKHPJ4ZeZXYVUhLv1VMrjPC7PW6V/0/*)"
 # int_descriptor is optional — derived from ext_descriptor if omitted
+
+# Additional data sources read by `scan`; account derives as
+# <base_account>:<type prefix>:<name>, e.g. assets:bitcoin:lightning:phoenix
+# [[sources]]
+# name = "phoenix"
+# type = "lightning.phoenix"
+# path = "/home/me/sync/phoenix-export.csv"

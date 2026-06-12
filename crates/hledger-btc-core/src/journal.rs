@@ -1,8 +1,44 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::Write;
 use anyhow::Result;
 use chrono::NaiveDate;
+use serde::{Deserialize, Serialize};
+
+/// Tags whose values identify the same real-world transaction across wallets
+/// and sources; used for merging and journal dedup.
+pub const DEDUP_KEYS: &[&str] = &["txid", "payment_hash"];
+
+/// An hledger account name; segments are joined with `:`.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct Account(String);
+
+impl Account {
+    pub fn new(s: impl Into<String>) -> Self {
+        Account(s.into())
+    }
+
+    pub fn append(&self, segment: impl AsRef<str>) -> Account {
+        Account(format!("{}:{}", self.0, segment.as_ref()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Account {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<Account> for String {
+    fn from(a: Account) -> String {
+        a.0
+    }
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct TagMap(pub Vec<(String, String)>);
@@ -23,6 +59,10 @@ impl TagMap {
 
     pub fn get(&self, key: &str) -> Option<&str> {
         self.0.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+    }
+
+    pub fn push(&mut self, k: impl Into<String>, v: impl Into<String>) {
+        self.0.push((k.into(), v.into()));
     }
 }
 
@@ -80,63 +120,75 @@ pub struct JournalEntry {
     pub postings: Vec<Posting>,
 }
 
-pub fn read_tag_values(reader: impl Read, tag: &str) -> Result<HashSet<String>> {
-    let prefix = format!("{tag}:");
-    let mut values = HashSet::new();
-    for line in BufReader::new(reader).lines() {
-        let line = line?;
-        if line.starts_with(' ') || line.starts_with('\t') || line.is_empty() {
-            continue;
-        }
-        if let Some(pos) = line.find(&prefix) {
-            let rest = &line[pos + prefix.len()..];
-            let end = rest.find([',', ' ']).unwrap_or(rest.len());
-            values.insert(rest[..end].to_string());
-        }
-    }
-    Ok(values)
-}
-
-pub fn read_txids(reader: impl Read) -> Result<HashSet<String>> {
-    read_tag_values(reader, "txid")
-}
-
-/// Merges entries that share a txid (inter-wallet transfers) into a single entry.
-/// Auto-balance postings are dropped; if the combined explicit postings don't net to
-/// zero, a single auto-balance counterpart is re-added.
-pub fn merge_by_txid(entries: Vec<JournalEntry>) -> Vec<JournalEntry> {
-    let mut order: Vec<String> = Vec::new();
-    let mut grouped: std::collections::HashMap<String, Vec<JournalEntry>> = std::collections::HashMap::new();
+/// Merges entries that share a dedup key value (inter-wallet transfers seen by
+/// both wallets, or the same payment seen by different sources) into a single
+/// entry carrying the union of tags. Auto-balance postings are dropped; if the
+/// combined explicit postings don't net to zero, a single auto-balance
+/// counterpart is re-added.
+pub fn merge_entries(entries: Vec<JournalEntry>) -> Vec<JournalEntry> {
+    let mut groups: Vec<Vec<JournalEntry>> = Vec::new();
+    let mut index: HashMap<(String, String), usize> = HashMap::new();
 
     for entry in entries {
-        let txid = entry.tags.0.iter()
-            .find(|(k, _)| k == "txid")
-            .map(|(_, v)| v.clone())
-            .unwrap_or_default();
-        if !grouped.contains_key(&txid) {
-            order.push(txid.clone());
+        let keys: Vec<(String, String)> = DEDUP_KEYS.iter()
+            .filter_map(|k| entry.tags.get(k).map(|v| (k.to_string(), v.to_string())))
+            .collect();
+
+        let mut matched: Vec<usize> = keys.iter().filter_map(|k| index.get(k).copied()).collect();
+        matched.sort_unstable();
+        matched.dedup();
+
+        let target = match matched.first() {
+            Some(&g) => g,
+            None => {
+                groups.push(Vec::new());
+                groups.len() - 1
+            }
+        };
+        // An entry can bridge groups (e.g. share a txid with one and a
+        // payment_hash with another); fold the extras into the target.
+        for &g in matched.iter().skip(1) {
+            let moved = std::mem::take(&mut groups[g]);
+            groups[target].extend(moved);
         }
-        grouped.entry(txid).or_default().push(entry);
+        if matched.len() > 1 {
+            for g in index.values_mut() {
+                if matched[1..].contains(g) {
+                    *g = target;
+                }
+            }
+        }
+        for k in keys {
+            index.insert(k, target);
+        }
+        groups[target].push(entry);
     }
 
-    let mut result: Vec<JournalEntry> = order.into_iter()
-        .map(|txid| {
-            let mut group = grouped.remove(&txid).unwrap();
-            if group.len() == 1 {
-                group.remove(0)
-            } else {
-                merge_wallet_entries(group)
-            }
-        })
+    let mut result: Vec<JournalEntry> = groups.into_iter()
+        .filter(|g| !g.is_empty())
+        .map(|mut g| if g.len() == 1 { g.remove(0) } else { merge_group(g) })
         .collect();
-
     result.sort_by_key(|e| e.date);
     result
 }
 
-fn merge_wallet_entries(entries: Vec<JournalEntry>) -> JournalEntry {
-    let date = entries[0].date;
-    let tags = entries[0].tags.clone();
+fn merge_group(entries: Vec<JournalEntry>) -> JournalEntry {
+    let date = entries.iter().map(|e| e.date).min().unwrap();
+    let description = if entries.iter().all(|e| e.description == entries[0].description) {
+        entries[0].description.clone()
+    } else {
+        "Transfer".to_string()
+    };
+
+    let mut tags = TagMap::new();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    for entry in &entries {
+        for (k, v) in &entry.tags.0 {
+            if seen.insert((k.clone(), v.clone())) {
+                tags.push(k.clone(), v.clone());
+            }
+        }
+    }
 
     let mut postings: Vec<Posting> = entries.into_iter()
         .flat_map(|e| e.postings.into_iter())
@@ -148,7 +200,7 @@ fn merge_wallet_entries(entries: Vec<JournalEntry>) -> JournalEntry {
         postings.push(Posting::auto_balance(if sum < 0 { "expenses:unknown" } else { "income:unknown" }));
     }
 
-    JournalEntry { date, description: "Transfer".to_string(), tags, postings }
+    JournalEntry { date, description, tags, postings }
 }
 
 pub fn write_entries(entries: &[JournalEntry], writer: &mut dyn Write) -> Result<()> {
@@ -197,4 +249,121 @@ fn fmt_sats(sats: i64) -> String {
         .unwrap()
         .join(",");
     if sats < 0 { format!("-{with_commas}") } else { with_commas }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(desc: &str, tags: TagMap, postings: Vec<Posting>) -> JournalEntry {
+        JournalEntry {
+            date: NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(),
+            description: desc.to_string(),
+            tags,
+            postings,
+        }
+    }
+
+    #[test]
+    fn merges_entries_sharing_txid() {
+        let a = entry("Outgoing BTC", TagMap::new().add("txid", "t1").add("source", "electrum"), vec![
+            Posting::with_amount("assets:bitcoin:savings:addr1", -5000),
+            Posting::auto_balance("expenses:unknown"),
+        ]);
+        let b = entry("Swap In", TagMap::new().add("txid", "t1").add("source", "phoenix"), vec![
+            Posting::with_amount("assets:bitcoin:lightning:phoenix", 4900),
+            Posting::with_amount("expenses:fees:onchain", 100),
+            Posting::auto_balance("assets:bitcoin"),
+        ]);
+
+        let merged = merge_entries(vec![a, b]);
+        assert_eq!(merged.len(), 1);
+        let m = &merged[0];
+        assert_eq!(m.description, "Transfer");
+        // explicit postings combined, auto-balance legs dropped, sum is zero
+        assert_eq!(m.postings.len(), 3);
+        assert!(m.postings.iter().all(|p| p.amount_sat.is_some()));
+        // union of tags carries both source stamps
+        let sources: Vec<_> = m.tags.0.iter().filter(|(k, _)| k == "source").collect();
+        assert_eq!(sources.len(), 2);
+    }
+
+    #[test]
+    fn merges_entries_sharing_payment_hash() {
+        let a = entry("Zap", TagMap::new().add("payment_hash", "ph1"), vec![
+            Posting::with_amount("assets:bitcoin:lightning:a", -1000),
+            Posting::auto_balance("expenses:unknown"),
+        ]);
+        let b = entry("Zap", TagMap::new().add("payment_hash", "ph1"), vec![
+            Posting::with_amount("assets:bitcoin:lightning:b", 1000),
+            Posting::auto_balance("income:unknown"),
+        ]);
+
+        let merged = merge_entries(vec![a, b]);
+        assert_eq!(merged.len(), 1);
+        // identical descriptions are preserved
+        assert_eq!(merged[0].description, "Zap");
+        // balanced: no unknown leg re-added
+        assert_eq!(merged[0].postings.len(), 2);
+    }
+
+    #[test]
+    fn unbalanced_merge_readds_auto_balance() {
+        let a = entry("A", TagMap::new().add("txid", "t1"), vec![
+            Posting::with_amount("assets:x", -5000),
+            Posting::auto_balance("expenses:unknown"),
+        ]);
+        let b = entry("B", TagMap::new().add("txid", "t1"), vec![
+            Posting::with_amount("assets:y", 4000),
+        ]);
+
+        let merged = merge_entries(vec![a, b]);
+        let last = merged[0].postings.last().unwrap();
+        assert_eq!(last.account, "expenses:unknown");
+        assert!(last.amount_sat.is_none());
+    }
+
+    #[test]
+    fn entries_without_shared_keys_stay_separate() {
+        let a = entry("A", TagMap::new().add("txid", "t1"), vec![Posting::with_amount("x", 1)]);
+        let b = entry("B", TagMap::new().add("txid", "t2"), vec![Posting::with_amount("x", 2)]);
+        let c = entry("C", TagMap::new(), vec![Posting::with_amount("x", 3)]);
+        let d = entry("D", TagMap::new(), vec![Posting::with_amount("x", 4)]);
+
+        assert_eq!(merge_entries(vec![a, b, c, d]).len(), 4);
+    }
+
+    #[test]
+    fn entry_bridges_groups_on_different_keys() {
+        let a = entry("A", TagMap::new().add("txid", "t1"), vec![Posting::with_amount("x", 1)]);
+        let b = entry("B", TagMap::new().add("payment_hash", "ph1"), vec![Posting::with_amount("y", 2)]);
+        let bridge = entry("C", TagMap::new().add("txid", "t1").add("payment_hash", "ph1"),
+            vec![Posting::with_amount("z", -3)]);
+
+        let merged = merge_entries(vec![a, b, bridge]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].postings.iter().filter(|p| p.amount_sat.is_some()).count(), 3);
+    }
+
+    #[test]
+    fn duplicate_tag_pairs_dedup_in_merge() {
+        let a = entry("A", TagMap::new().add("txid", "t1").add("source", "electrum"),
+            vec![Posting::with_amount("x", 1)]);
+        let b = entry("B", TagMap::new().add("txid", "t1").add("source", "electrum"),
+            vec![Posting::with_amount("y", -1)]);
+
+        let merged = merge_entries(vec![a, b]);
+        let txids: Vec<_> = merged[0].tags.0.iter().filter(|(k, _)| k == "txid").collect();
+        let sources: Vec<_> = merged[0].tags.0.iter().filter(|(k, _)| k == "source").collect();
+        assert_eq!(txids.len(), 1);
+        assert_eq!(sources.len(), 1);
+    }
+
+    #[test]
+    fn formats_sats_with_commas() {
+        assert_eq!(fmt_sats(0), "0");
+        assert_eq!(fmt_sats(999), "999");
+        assert_eq!(fmt_sats(1000), "1,000");
+        assert_eq!(fmt_sats(-1234567), "-1,234,567");
+    }
 }

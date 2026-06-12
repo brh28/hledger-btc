@@ -7,4 +7,5 @@ pub mod journal;
 pub mod persist;
 pub mod receive;
 pub mod scan;
+pub mod source;
 pub mod trace;

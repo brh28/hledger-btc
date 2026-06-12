@@ -8,13 +8,13 @@ journal entries — helping you track cost-basis', balances, cash flows, etc.
 
 ## Features
 
-- **`scan`** — fetch confirmed transactions for all configured wallets and write them to your journal
+- **`scan`** — fetch transactions from all configured data sources (on-chain wallets via Electrum, Lightning wallet exports) and write new entries to your journal, merging entries that describe the same transaction across sources
 - **`label`** — set the description or posting note on a transaction, address, or output/input
 - **`tag`** — attach hledger tags (`key:value`) to a transaction, address, or output/input
 - **`import`** — import [BIP329](https://github.com/bitcoin/bips/blob/master/bip-0329.mediawiki) labels into your journal
 - **`export`** — export your journal to BIP329 label format
 - **`receive`** — record a receiving address as a receivable in the journal
-- **`config`** — manage the electrum server and wallet configuration
+- **`config`** — manage the electrum server, wallet, and data source configuration
 - **`trace`** — recursively print transactions associated with an address to trace it's history
 
 ## Usage
@@ -42,6 +42,9 @@ hledger-btc import labels.jsonl
 # Export journal to BIP329 (stdout, or -o for a file)
 hledger-btc export -o labels.jsonl
 
+# Scan a single source (e.g. while testing a new export file)
+hledger-btc scan --source phoenix
+
 # Record an expected incoming payment
 hledger-btc receive --address bc1q... --description "Invoice 3" --amount 100000 --total-cost 'USD 500.00'
 
@@ -54,6 +57,7 @@ hledger-btc config show
 hledger-btc config set --network bitcoin --server-url ssl://electrum.blockstream.info:50002
 hledger-btc config wallet add --name savings --descriptor "wpkh([df9d4f28/84h/0h/0h]xpub.../0/*)"
 hledger-btc config wallet remove --name savings
+hledger-btc config source list
 ```
 
 ### Journal file resolution
@@ -94,16 +98,40 @@ ext_descriptor = "wpkh([df9d4f28/84h/0h/0h]xpub.../0/*)"
 [[wallets]]
 wallet         = "spending"
 ext_descriptor = "wpkh([ab1c2d3e/84h/0h/0h]xpub.../0/*)"
+
+[[sources]]
+name = "phoenix"
+type = "lightning.phoenix"
+path = "/home/me/sync/phoenix-export.csv"
 ```
 
 `base_account` is the account prefix for all wallet and `receive` postings. Each
 wallet's account defaults to `<base_account>:<wallet>`, e.g. `assets:bitcoin:savings`.
 
+### Data sources
+
+Beyond the built-in Electrum wallet scan, `scan` reads every `[[sources]]` entry:
+a `name` (unique; stamped on entries as the `source:` tag), a `type` identifying
+the file format, and a `path` to read. Automation that fetches fresh data (a
+synced Phoenix export, an exchange API script) should write to `path` before
+`scan` runs — e.g. `fetch-exchange > /tmp/data.csv && hledger-btc scan`.
+
+Supported types:
+
+| Type | Format | Account |
+|---|---|---|
+| `lightning.phoenix` | Phoenix wallet CSV export | `<base_account>:lightning:<name>` |
+
+Entries from different sources that share a `txid` or `payment_hash` (e.g. an
+on-chain transaction also seen by a Lightning swap) are merged into a single
+journal entry. If a source reports data for a transaction already in the
+journal, `scan` skips it and prints a notice rather than duplicating it.
+
 ## Give it a try
 
-A working example is provided in [`wallets.toml.example`](wallets.toml.example).
+A working example is provided in [`config.toml.example`](config.toml.example).
 
-1. Set config: `cp wallets.toml.example ~/.config/hledger-btc/config.toml`
+1. Set config: `cp config.toml.example ~/.config/hledger-btc/config.toml`
 2. Run: `cargo run -- scan`
 3. Verify:
 ```
@@ -146,7 +174,9 @@ All amounts are recorded in satoshis to avoid floating-point imprecision.
 
 | Field | Where | Purpose |
 |---|---|---|
-| `txid:` | transaction comment | links entries across commands |
+| `txid:` | transaction comment | links entries across commands and sources |
+| `payment_hash:` | transaction comment | links Lightning entries across sources |
+| `source:` | transaction comment | records which source(s) produced the entry; drives scan dedup |
 | `vout:N` | output posting comment | identifies the transaction output (outpoint index) |
 | `input:N` | input posting comment | identifies the transaction input being spent |
 | address sub-account | posting account name | e.g. `assets:bitcoin:savings:bc1q...` |
