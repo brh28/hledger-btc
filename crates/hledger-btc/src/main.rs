@@ -273,8 +273,8 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Scan { journal, output, source } => {
-            let cfg = config::load(&config_path)?;
-            let mut srcs = sources::build(&cfg)?;
+            let full = sources::load_full(&config_path)?;
+            let mut srcs = sources::build(&full.core, &full.sources)?;
             if let Some(name) = source {
                 anyhow::ensure!(
                     srcs.iter().any(|s| s.name() == name),
@@ -431,13 +431,13 @@ fn main() -> Result<()> {
             }
             ConfigSubcommand::Source { subcommand: source_sub } => match source_sub {
                 SourceSubcommand::List => {
-                    let cfg = config::load(&config_path)?;
-                    if !cfg.wallets.is_empty() {
-                        let wallets: Vec<&str> = cfg.wallets.iter().map(|w| w.wallet.as_str()).collect();
+                    let full = sources::load_full(&config_path)?;
+                    if !full.core.wallets.is_empty() {
+                        let wallets: Vec<&str> = full.core.wallets.iter().map(|w| w.wallet.as_str()).collect();
                         println!("electrum (built-in): wallets {}", wallets.join(", "));
                     }
-                    for s in &cfg.sources {
-                        println!("{} ({}): {}", s.name, s.type_, s.path.display());
+                    for s in &full.sources {
+                        println!("{}", s.type_);
                     }
                 }
             },
@@ -454,6 +454,7 @@ fn main() -> Result<()> {
                         ext_descriptor: descriptor,
                         int_descriptor: None,
                         state_file: None,
+                        archived: false,
                     });
 
                     write_config(&config_path, &cfg)?;

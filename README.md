@@ -3,8 +3,10 @@
 A Bitcoin accounting add-on for [hledger](https://hledger.org), written in Rust.
 
 Bitcoin is the public ledger. Hledger is your personal ledger. `hledger-btc` bridges the two. It
-scans your wallets via Electrum, writes confirmed transactions as double-entry
-journal entries — helping you track cost-basis', balances, cash flows, etc.
+scans your wallets and third-party accounts, merges entries that describe the
+same transaction across sources (transfer matching), and writes the results as
+double-entry journal entries — helping you track cost-basis, balances, cash
+flows, etc.
 
 ## Features
 
@@ -88,7 +90,7 @@ Config lives at `~/.config/hledger-btc/config.toml`.
 network    = "bitcoin"               # bitcoin | testnet | signet | regtest
 server_url = "ssl://electrum.blockstream.info:50002"
 # client_type  = "electrum"         # optional, default: electrum
-# base_account = "assets:bitcoin"   # optional, default: assets:bitcoin
+# base_account = "assets"           # optional, default: assets
 
 [[wallets]]
 wallet         = "savings"
@@ -106,7 +108,7 @@ path = "/home/me/sync/phoenix-export.csv"
 ```
 
 `base_account` is the account prefix for all wallet and `receive` postings. Each
-wallet's account defaults to `<base_account>:<wallet>`, e.g. `assets:bitcoin:savings`.
+wallet's account defaults to `<base_account>:<wallet>`, e.g. `assets:savings`.
 
 ### Data sources
 
@@ -182,6 +184,14 @@ All amounts are recorded in satoshis to avoid floating-point imprecision.
 | address sub-account | posting account name | e.g. `assets:bitcoin:savings:bc1q...` |
 
 Everything else — the description, posting free-text, and any user-defined tags — is safe to edit freely. Use `label` and `tag` commands rather than hand-editing to reduce the risk of accidentally modifying structural fields.
+
+### Transfer matching
+
+When two sources each see one side of the same transaction — for example,
+Electrum recording an outgoing spend and Phoenix recording a swap-in with the
+same `txid` — `scan` merges them into a single journal entry. Entries sharing a
+`txid`, `payment_hash`, or `coinbase_id` from multiple sources are merged, with
+their postings combined and tags unioned.
 
 ### BIP329
 

@@ -3,9 +3,14 @@ name = "hledger-btc"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+coinbase = ["dep:hledger-btc-coinbase"]
+
 [dependencies]
 hledger-btc-core = { path = "../hledger-btc-core" }
 hledger-btc-lightning = { path = "../hledger-btc-lightning" }
+hledger-btc-coinbase = { path = "../hledger-btc-coinbase", optional = true }
+serde.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 chrono.workspace = true

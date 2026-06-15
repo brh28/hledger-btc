@@ -1,4 +1,5 @@
 pub mod annotate;
+pub mod money;
 pub mod config;
 pub mod label;
 pub mod export;

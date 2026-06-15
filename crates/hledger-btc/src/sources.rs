@@ -1,46 +1,68 @@
 use std::collections::HashSet;
 use std::io::BufWriter;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use anyhow::Result;
+use serde::Deserialize;
 
-use hledger_btc_core::config::{Config, SourceConfig};
-use hledger_btc_core::journal;
+use hledger_btc_core::config::Config;
+use hledger_btc_core::journal::{self, Account};
 use hledger_btc_core::scan::ElectrumSource;
-use hledger_btc_core::source::{self, FileSource, Source};
-use hledger_btc_lightning::phoenix;
+use hledger_btc_core::source::{self, Source};
 
-/// Builds one Source per configured input: the built-in electrum scanner plus
-/// everything declared in [[sources]]. This match is the registry of known
-/// source types; new types (and their feature gates) are added here.
-pub fn build(cfg: &Config) -> Result<Vec<Box<dyn Source + '_>>> {
-    let mut sources: Vec<Box<dyn Source + '_>> = Vec::new();
+#[derive(Deserialize)]
+pub struct SourceEntry {
+    #[serde(rename = "type")]
+    pub type_: String,
+    #[serde(flatten)]
+    pub config: toml::Table,
+}
+
+impl SourceEntry {
+    pub fn account_name(&self, base: &Account) -> Account {
+        self.type_.split('.').fold(base.clone(), |acc, seg| acc.append(seg))
+    }
+}
+
+#[derive(Deserialize)]
+pub struct FullConfig {
+    #[serde(flatten)]
+    pub core: Config,
+    #[serde(default)]
+    pub sources: Vec<SourceEntry>,
+}
+
+pub fn load_full(path: &PathBuf) -> Result<FullConfig> {
+    anyhow::ensure!(path.exists(), "config not found at {path:?}");
+    let raw = std::fs::read_to_string(path)?;
+    toml::from_str(&raw).map_err(Into::into)
+}
+
+pub fn build<'a>(cfg: &'a Config, entries: &[SourceEntry]) -> Result<Vec<Box<dyn Source + 'a>>> {
+    let mut sources: Vec<Box<dyn Source + 'a>> = Vec::new();
     if !cfg.wallets.is_empty() {
         sources.push(Box::new(ElectrumSource { cfg }));
     }
-    let mut names = HashSet::from(["electrum".to_string()]);
-    for sc in &cfg.sources {
-        anyhow::ensure!(names.insert(sc.name.clone()), "duplicate source name '{}'", sc.name);
-        sources.push(build_one(cfg, sc)?);
+    let mut seen_types = HashSet::from(["electrum".to_string()]);
+    for entry in entries {
+        anyhow::ensure!(
+            seen_types.insert(entry.type_.clone()),
+            "duplicate source type '{}'", entry.type_
+        );
+        let account = entry.account_name(&cfg.base_account);
+        sources.push(build_one(entry, account)?);
     }
     Ok(sources)
 }
 
-fn build_one(cfg: &Config, sc: &SourceConfig) -> Result<Box<dyn Source + 'static>> {
-    match sc.type_.as_str() {
-        "lightning.phoenix" => {
-            let account = sc.account_name(&cfg.base_account);
-            Ok(Box::new(FileSource::new(
-                sc.name.clone(),
-                sc.path.clone(),
-                move |file| phoenix::parse(file, account.as_str()),
-            )))
-        }
-        other => anyhow::bail!("unknown source type '{other}' for source '{}'", sc.name),
+fn build_one(entry: &SourceEntry, account: Account) -> Result<Box<dyn Source + 'static>> {
+    match entry.type_.as_str() {
+        "lightning.phoenix" => hledger_btc_lightning::build(&entry.config, account),
+        #[cfg(feature = "coinbase")]
+        "coinbase" => hledger_btc_coinbase::build(&entry.config, account),
+        other => anyhow::bail!("unknown source type '{other}'"),
     }
 }
 
-/// The scan pipeline: collect from all sources, merge across them, dedup
-/// against the journal, append what's new, and report what was skipped.
 pub fn run_pipeline(
     sources: &[Box<dyn Source + '_>],
     journal_path: &Path,

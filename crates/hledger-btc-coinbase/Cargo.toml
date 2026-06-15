@@ -1,0 +1,17 @@
+[package]
+name = "hledger-btc-coinbase"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hledger-btc-core = { path = "../hledger-btc-core" }
+anyhow.workspace = true
+bigdecimal.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tracing.workspace = true
+ureq = { version = "2", features = ["json"] }
+p256 = { version = "0.13", features = ["pem", "ecdsa"] }
+base64 = "0.22"

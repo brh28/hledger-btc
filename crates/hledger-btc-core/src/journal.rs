@@ -2,12 +2,15 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::Write;
 use anyhow::Result;
+
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
+use crate::money::Money;
+
 /// Tags whose values identify the same real-world transaction across wallets
 /// and sources; used for merging and journal dedup.
-pub const DEDUP_KEYS: &[&str] = &["txid", "payment_hash"];
+pub const DEDUP_KEYS: &[&str] = &["txid", "payment_hash", "coinbase_id"];
 
 /// An hledger account name; segments are joined with `:`.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -85,18 +88,22 @@ pub enum PriceAnnotation {
 pub struct Posting {
     pub account: String,
     /// `None` means hledger auto-balances this posting.
-    pub amount_sat: Option<i64>,
+    pub amount: Option<Money>,
     pub price: Option<PriceAnnotation>,
     pub tags: TagMap,
 }
 
 impl Posting {
     pub fn with_amount(account: impl Into<String>, amount_sat: i64) -> Self {
-        Posting { account: account.into(), amount_sat: Some(amount_sat), price: None, tags: TagMap::new() }
+        Posting { account: account.into(), amount: Some(Money::sat(amount_sat)), price: None, tags: TagMap::new() }
+    }
+
+    pub fn with_money(account: impl Into<String>, money: Money) -> Self {
+        Posting { account: account.into(), amount: Some(money), price: None, tags: TagMap::new() }
     }
 
     pub fn auto_balance(account: impl Into<String>) -> Self {
-        Posting { account: account.into(), amount_sat: None, price: None, tags: TagMap::new() }
+        Posting { account: account.into(), amount: None, price: None, tags: TagMap::new() }
     }
 
     pub fn with_price(mut self, price: Option<PriceAnnotation>) -> Self {
@@ -108,8 +115,6 @@ impl Posting {
         self.tags = tags;
         self
     }
-
-
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +123,15 @@ pub struct JournalEntry {
     pub description: String,
     pub tags: TagMap,
     pub postings: Vec<Posting>,
+}
+
+/// Sums the amounts of all explicit postings with the given commodity.
+pub fn sum_commodity(postings: &[Posting], commodity: &str) -> Money {
+    let total = postings.iter()
+        .filter_map(|p| p.amount.as_ref().filter(|m| m.commodity == commodity))
+        .map(|m| m.amount.clone())
+        .sum();
+    Money::new(total, commodity)
 }
 
 /// Merges entries that share a dedup key value (inter-wallet transfers seen by
@@ -192,12 +206,12 @@ fn merge_group(entries: Vec<JournalEntry>) -> JournalEntry {
 
     let mut postings: Vec<Posting> = entries.into_iter()
         .flat_map(|e| e.postings.into_iter())
-        .filter(|p| p.amount_sat.is_some())
+        .filter(|p| p.amount.is_some())
         .collect();
 
-    let sum: i64 = postings.iter().filter_map(|p| p.amount_sat).sum();
-    if sum != 0 {
-        postings.push(Posting::auto_balance(if sum < 0 { "expenses:unknown" } else { "income:unknown" }));
+    let sat_sum = sum_commodity(&postings, "SAT");
+    if !sat_sum.is_zero() {
+        postings.push(Posting::auto_balance(if sat_sum.is_negative() { "expenses:unknown" } else { "income:unknown" }));
     }
 
     JournalEntry { date, description, tags, postings }
@@ -211,25 +225,25 @@ pub fn write_entries(entries: &[JournalEntry], writer: &mut dyn Write) -> Result
 }
 
 fn write_entry(entry: &JournalEntry, w: &mut dyn Write) -> Result<()> {
-    write!(w, "{} * {}", entry.date, entry.description)?;
+    let description = entry.description.replace(['\n', '\r'], " ");
+    write!(w, "{} * {}", entry.date, description)?;
     if !entry.tags.is_empty() {
         write!(w, "  ; {}", entry.tags)?;
     }
     writeln!(w)?;
 
     for posting in &entry.postings {
-        match posting.amount_sat {
-            Some(sats) => {
+        match &posting.amount {
+            Some(money) => {
                 let price = match &posting.price {
                     Some(PriceAnnotation::Unit(p)) => format!(" @ {p}"),
                     Some(PriceAnnotation::Total(c)) => format!(" @@ {c}"),
                     None => String::new(),
                 };
-                let amount = fmt_sats(sats);
                 if posting.tags.is_empty() {
-                    writeln!(w, "    {}    {} sat{}", posting.account, amount, price)?;
+                    writeln!(w, "    {}    {}{}", posting.account, money, price)?;
                 } else {
-                    writeln!(w, "    {}    {} sat{}  ; {}", posting.account, amount, price, posting.tags)?;
+                    writeln!(w, "    {}    {}{}  ; {}", posting.account, money, price, posting.tags)?;
                 }
             }
             None => writeln!(w, "    {}", posting.account)?,
@@ -238,17 +252,6 @@ fn write_entry(entry: &JournalEntry, w: &mut dyn Write) -> Result<()> {
 
     writeln!(w)?;
     Ok(())
-}
-
-fn fmt_sats(sats: i64) -> String {
-    let s = sats.unsigned_abs().to_string();
-    let with_commas = s.as_bytes().rchunks(3)
-        .rev()
-        .map(std::str::from_utf8)
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap()
-        .join(",");
-    if sats < 0 { format!("-{with_commas}") } else { with_commas }
 }
 
 #[cfg(test)]
@@ -280,10 +283,8 @@ mod tests {
         assert_eq!(merged.len(), 1);
         let m = &merged[0];
         assert_eq!(m.description, "Transfer");
-        // explicit postings combined, auto-balance legs dropped, sum is zero
         assert_eq!(m.postings.len(), 3);
-        assert!(m.postings.iter().all(|p| p.amount_sat.is_some()));
-        // union of tags carries both source stamps
+        assert!(m.postings.iter().all(|p| p.amount.is_some()));
         let sources: Vec<_> = m.tags.0.iter().filter(|(k, _)| k == "source").collect();
         assert_eq!(sources.len(), 2);
     }
@@ -301,9 +302,7 @@ mod tests {
 
         let merged = merge_entries(vec![a, b]);
         assert_eq!(merged.len(), 1);
-        // identical descriptions are preserved
         assert_eq!(merged[0].description, "Zap");
-        // balanced: no unknown leg re-added
         assert_eq!(merged[0].postings.len(), 2);
     }
 
@@ -320,7 +319,7 @@ mod tests {
         let merged = merge_entries(vec![a, b]);
         let last = merged[0].postings.last().unwrap();
         assert_eq!(last.account, "expenses:unknown");
-        assert!(last.amount_sat.is_none());
+        assert!(last.amount.is_none());
     }
 
     #[test]
@@ -342,7 +341,7 @@ mod tests {
 
         let merged = merge_entries(vec![a, b, bridge]);
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].postings.iter().filter(|p| p.amount_sat.is_some()).count(), 3);
+        assert_eq!(merged[0].postings.iter().filter(|p| p.amount.is_some()).count(), 3);
     }
 
     #[test]
@@ -357,13 +356,5 @@ mod tests {
         let sources: Vec<_> = merged[0].tags.0.iter().filter(|(k, _)| k == "source").collect();
         assert_eq!(txids.len(), 1);
         assert_eq!(sources.len(), 1);
-    }
-
-    #[test]
-    fn formats_sats_with_commas() {
-        assert_eq!(fmt_sats(0), "0");
-        assert_eq!(fmt_sats(999), "999");
-        assert_eq!(fmt_sats(1000), "1,000");
-        assert_eq!(fmt_sats(-1234567), "-1,234,567");
     }
 }

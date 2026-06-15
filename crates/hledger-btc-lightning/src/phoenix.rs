@@ -140,6 +140,8 @@ fn non_empty(s: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hledger_btc_core::journal::sum_commodity;
+    use hledger_btc_core::money::Money;
 
     const HEADER: &str = "date,id,type,amount_msat,amount_fiat,fee_credit_msat,mining_fee_sat,mining_fee_fiat,service_fee_msat,service_fee_fiat,payment_hash,tx_id,destination,description";
 
@@ -158,9 +160,9 @@ mod tests {
         assert_eq!(e.description, "coffee refund");
         assert_eq!(e.tags.get("payment_hash"), Some("ph1"));
         // net into wallet = 100_000 sat gross - 1_000 sat fee
-        assert_eq!(e.postings[0].amount_sat, Some(99_000));
+        assert_eq!(e.postings[0].amount, Some(Money::sat(99_000)));
         assert_eq!(e.postings[1].account, "expenses:fees:lightning");
-        assert_eq!(e.postings[1].amount_sat, Some(1_000));
+        assert_eq!(e.postings[1].amount, Some(Money::sat(1_000)));
         assert_eq!(e.postings[2].account, "income:unknown");
     }
 
@@ -171,7 +173,7 @@ mod tests {
         let e = &entries[0];
         assert_eq!(e.description, "Lightning Sent");
         // total deducted = 50_000 payment + 2_000 fee
-        assert_eq!(e.postings[0].amount_sat, Some(-52_000));
+        assert_eq!(e.postings[0].amount, Some(Money::sat(-52_000)));
         assert_eq!(e.postings.last().unwrap().account, "expenses:unknown");
     }
 
@@ -182,9 +184,9 @@ mod tests {
         let e = &entries[0];
         assert_eq!(e.description, "Swap In");
         assert_eq!(e.tags.get("txid"), Some("tx1"));
-        assert_eq!(e.postings[0].amount_sat, Some(200_000));
+        assert_eq!(e.postings[0].amount, Some(Money::sat(200_000)));
         assert_eq!(e.postings[1].account, "expenses:fees:onchain");
-        assert_eq!(e.postings[1].amount_sat, Some(500));
+        assert_eq!(e.postings[1].amount, Some(Money::sat(500)));
     }
 
     #[test]
@@ -196,16 +198,15 @@ mod tests {
         assert_eq!(e.tags.get("txid"), Some("tx2"));
         assert_eq!(e.tags.get("payment_hash"), None);
         // full debit from lightning, fee included
-        assert_eq!(e.postings[0].amount_sat, Some(-100_000));
+        assert_eq!(e.postings[0].amount, Some(Money::sat(-100_000)));
         assert_eq!(e.postings[1].account, "expenses:fees:onchain");
-        assert_eq!(e.postings[1].amount_sat, Some(500));
+        assert_eq!(e.postings[1].amount, Some(Money::sat(500)));
         // auto-balance receives |amount| - fee = 99_500 on-chain
         let last = e.postings.last().unwrap();
         assert_eq!(last.account, "assets:bitcoin");
-        assert!(last.amount_sat.is_none());
+        assert!(last.amount.is_none());
         // explicit postings sum to -(on-chain received)
-        let sum: i64 = e.postings.iter().filter_map(|p| p.amount_sat).sum();
-        assert_eq!(sum, -99_500);
+        assert_eq!(sum_commodity(&e.postings, "SAT"), Money::sat(-99_500));
     }
 
     #[test]

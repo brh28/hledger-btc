@@ -87,15 +87,15 @@ impl AnnotationMaps {
             } else if line.starts_with(' ') || line.starts_with('\t') {
                 if let (Some(vout), Some(txid)) = (extract_int_tag(line, "vout"), &current_txid) {
                     let ref_ = format!("{txid}:{vout}");
-                    apply_tags(line, self.output_labels.get(&ref_).map(String::as_str), self.output_tags.get(&ref_), override_existing)
+                    apply_posting_annotation(line, self.output_labels.get(&ref_).map(String::as_str), self.output_tags.get(&ref_), override_existing)
                 } else if let (Some(idx), Some(txid)) = (extract_int_tag(line, "input"), &current_txid) {
                     let ref_ = format!("{txid}:{idx}");
-                    apply_tags(line, self.input_labels.get(&ref_).map(String::as_str), self.input_tags.get(&ref_), override_existing)
+                    apply_posting_annotation(line, self.input_labels.get(&ref_).map(String::as_str), self.input_tags.get(&ref_), override_existing)
                 } else {
                     let addr = extract_tag(line, "address")
                         .or_else(|| extract_address_from_account(line));
                     if let Some(addr) = addr {
-                        apply_tags(line, self.addr_labels.get(&addr).map(String::as_str), self.addr_tags.get(&addr), override_existing)
+                        apply_posting_annotation(line, self.addr_labels.get(&addr).map(String::as_str), self.addr_tags.get(&addr), override_existing)
                     } else {
                         line.to_string()
                     }
@@ -103,7 +103,7 @@ impl AnnotationMaps {
             } else {
                 if let Some(txid) = extract_tag(line, "txid") {
                     current_txid = Some(txid.clone());
-                    apply_tags(line, self.tx_labels.get(&txid).map(String::as_str), self.tx_tags.get(&txid), override_existing)
+                    apply_tx_annotation(line, self.tx_labels.get(&txid).map(String::as_str), self.tx_tags.get(&txid), override_existing)
                 } else {
                     line.to_string()
                 }
@@ -119,7 +119,7 @@ impl AnnotationMaps {
     }
 }
 
-fn apply_tags(
+fn apply_tx_annotation(
     line: &str,
     label: Option<&str>,
     tags: Option<&BTreeMap<String, String>>,
@@ -127,7 +127,7 @@ fn apply_tags(
 ) -> String {
     let mut result = line.to_string();
     if let Some(l) = label {
-        result = set_tag(&result, "label", l, override_existing);
+        result = set_description(&result, l);
     }
     if let Some(t) = tags {
         for (k, v) in t {
@@ -135,6 +135,79 @@ fn apply_tags(
         }
     }
     result
+}
+
+fn apply_posting_annotation(
+    line: &str,
+    label: Option<&str>,
+    tags: Option<&BTreeMap<String, String>>,
+    override_existing: bool,
+) -> String {
+    let mut result = line.to_string();
+    if let Some(l) = label {
+        result = set_comment_text(&result, l, override_existing);
+    }
+    if let Some(t) = tags {
+        for (k, v) in t {
+            result = set_tag(&result, k, v, override_existing);
+        }
+    }
+    result
+}
+
+fn set_description(line: &str, label: &str) -> String {
+    let (head, tail) = line.find("  ;")
+        .map(|p| (&line[..p], &line[p..]))
+        .unwrap_or((line, ""));
+    let offset = find_description_offset(head);
+    format!("{}{}{}", &head[..offset], label, tail)
+}
+
+fn find_description_offset(head: &str) -> usize {
+    let after_date = head.len().min(11); // "YYYY-MM-DD "
+    let rest = &head[after_date..];
+    if rest.starts_with("* ") || rest.starts_with("! ") {
+        after_date + 2
+    } else {
+        after_date
+    }
+}
+
+fn set_comment_text(line: &str, text: &str, override_existing: bool) -> String {
+    if let Some(pos) = line.find("  ; ") {
+        let prefix = &line[..pos];
+        let comment = &line[pos + 4..];
+        let tag_start = find_tag_start(comment);
+        let existing_free = comment[..tag_start].trim_end();
+        let tags = comment[tag_start..].trim_start();
+        if !existing_free.is_empty() && !override_existing {
+            return line.to_string();
+        }
+        if tags.is_empty() {
+            format!("{}  ; {}", prefix, text)
+        } else {
+            format!("{}  ; {}  {}", prefix, text, tags)
+        }
+    } else {
+        format!("{}  ; {}", line, text)
+    }
+}
+
+fn find_tag_start(comment: &str) -> usize {
+    let mut search_from = 0;
+    while let Some(colon_rel) = comment[search_from..].find(':') {
+        let colon = search_from + colon_rel;
+        let word_start = comment[..colon]
+            .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+            .map(|p| p + 1)
+            .unwrap_or(0);
+        let word = &comment[word_start..colon];
+        if !word.is_empty() && word.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            return word_start;
+        }
+        search_from = colon + 1;
+    }
+    comment.len()
 }
 
 fn set_tag(line: &str, key: &str, value: &str, override_existing: bool) -> String {
@@ -233,21 +306,21 @@ mod tests {
     #[test]
     fn injects_tx_label() {
         let result = import_from_str(&journal_with_tx(TXID), &bip329_tx(TXID, "coinbase"), false).unwrap();
-        assert!(result.contains(&format!("txid:{TXID}, label:coinbase")));
+        assert!(result.contains("* coinbase  ; txid:"));
     }
 
     #[test]
     fn injects_tx_tags() {
         let bip329 = bip329_tx_with_tags(TXID, "coinbase", r#""lot":"20260608""#);
         let result = import_from_str(&journal_with_tx(TXID), &bip329, false).unwrap();
-        assert!(result.contains("label:coinbase"));
+        assert!(result.contains("* coinbase  ; txid:"));
         assert!(result.contains("lot:20260608"));
     }
 
     #[test]
     fn injects_address_label() {
         let result = import_from_str(&journal_with_addr(TXID, ADDR), &bip329_addr(ADDR, "my wallet"), false).unwrap();
-        assert!(result.contains(&format!("address:{ADDR}, label:my wallet")));
+        assert!(result.contains(&format!("; my wallet  address:{ADDR}")));
     }
 
     #[test]
@@ -256,27 +329,27 @@ mod tests {
             "2024-01-15 * Mining reward  ; txid:{TXID}\n    assets:bitcoin:wallet:{ADDR}    100000 sat\n    income:bitcoin\n"
         );
         let result = import_from_str(&journal, &bip329_addr(ADDR, "my wallet"), false).unwrap();
-        assert!(result.contains("label:my wallet"));
+        assert!(result.contains("; my wallet\n"));
     }
 
     #[test]
     fn injects_output_label() {
         let result = import_from_str(&journal_with_vout(TXID, ADDR, 1), &bip329_output(TXID, 1, "savings deposit"), false).unwrap();
-        assert!(result.contains("label:savings deposit"));
+        assert!(result.contains("; savings deposit  vout:"));
     }
 
     #[test]
     fn injects_output_tags() {
         let bip329 = bip329_output_with_tags(TXID, 1, "savings deposit", r#""lot":"20260608""#);
         let result = import_from_str(&journal_with_vout(TXID, ADDR, 1), &bip329, false).unwrap();
-        assert!(result.contains("label:savings deposit"));
+        assert!(result.contains("; savings deposit  vout:"));
         assert!(result.contains("lot:20260608"));
     }
 
     #[test]
     fn injects_input_label() {
         let result = import_from_str(&journal_with_input(TXID, ADDR, 0), &bip329_input(TXID, 0, "payment to Alice"), false).unwrap();
-        assert!(result.contains("label:payment to Alice"));
+        assert!(result.contains("; payment to Alice  input:"));
     }
 
     #[test]
@@ -294,19 +367,28 @@ mod tests {
     }
 
     #[test]
-    fn preserves_existing_label_when_no_override() {
-        let journal = format!("2024-01-15 * Mining reward  ; txid:{TXID}, label:original\n    income:bitcoin\n");
+    fn tx_label_always_replaces_description() {
+        let journal = format!("2024-01-15 * Mining reward  ; txid:{TXID}\n    income:bitcoin\n");
         let result = import_from_str(&journal, &bip329_tx(TXID, "replacement"), false).unwrap();
-        assert!(result.contains("label:original"));
-        assert!(!result.contains("label:replacement"));
+        assert!(result.contains("* replacement  ;"));
     }
 
     #[test]
-    fn replaces_existing_label_when_override() {
-        let journal = format!("2024-01-15 * Mining reward  ; txid:{TXID}, label:original\n    income:bitcoin\n");
-        let result = import_from_str(&journal, &bip329_tx(TXID, "replacement"), true).unwrap();
-        assert!(result.contains("label:replacement"));
-        assert!(!result.contains("label:original"));
+    fn preserves_existing_tag_when_no_override() {
+        let journal = format!("2024-01-15 * Mining reward  ; txid:{TXID}, lot:original\n    income:bitcoin\n");
+        let bip329 = bip329_tx_with_tags(TXID, "x", r#""lot":"new""#);
+        let result = import_from_str(&journal, &bip329, false).unwrap();
+        assert!(result.contains("lot:original"));
+        assert!(!result.contains("lot:new"));
+    }
+
+    #[test]
+    fn replaces_existing_tag_when_override() {
+        let journal = format!("2024-01-15 * Mining reward  ; txid:{TXID}, lot:original\n    income:bitcoin\n");
+        let bip329 = bip329_tx_with_tags(TXID, "x", r#""lot":"new""#);
+        let result = import_from_str(&journal, &bip329, true).unwrap();
+        assert!(result.contains("lot:new"));
+        assert!(!result.contains("lot:original"));
     }
 
     #[test]
@@ -326,7 +408,7 @@ mod tests {
             tags: BTreeMap::new(),
         };
         let result = annotate_journal(&journal_with_tx(TXID), &annotation, false);
-        assert!(result.contains("label:coinbase"));
+        assert!(result.contains("* coinbase  ; txid:"));
     }
 
     #[test]
@@ -338,6 +420,6 @@ mod tests {
             tags: BTreeMap::new(),
         };
         let result = annotate_journal(&journal_with_vout(TXID, ADDR, 1), &annotation, false);
-        assert!(result.contains("label:savings"));
+        assert!(result.contains("; savings  vout:"));
     }
 }

@@ -12,27 +12,6 @@ pub struct Config {
     #[serde(default = "default_base_account")]
     pub base_account: Account,
     pub wallets: Vec<WalletConfig>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sources: Vec<SourceConfig>,
-}
-
-/// A non-electrum data source (lightning wallet export, exchange data, …)
-/// read from a file; automation fetches into `path` before `scan` runs.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct SourceConfig {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub type_: String,
-    pub path: PathBuf,
-}
-
-impl SourceConfig {
-    /// Account for this source's postings: `<base>:<type prefix>:<name>`,
-    /// e.g. type `lightning.phoenix` named `phoenix` → `assets:bitcoin:lightning:phoenix`.
-    pub fn account_name(&self, base_account: &Account) -> Account {
-        let prefix = self.type_.split('.').next().unwrap_or(&self.type_);
-        base_account.append(prefix).append(&self.name)
-    }
 }
 
 fn default_client_type() -> ClientType {
@@ -40,7 +19,7 @@ fn default_client_type() -> ClientType {
 }
 
 fn default_base_account() -> Account {
-    Account::new("assets:bitcoin")
+    Account::new("assets")
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -49,6 +28,8 @@ pub struct WalletConfig {
     pub ext_descriptor: String,
     pub int_descriptor: Option<String>,
     pub state_file: Option<PathBuf>,
+    #[serde(default)]
+    pub archived: bool,
 }
 
 impl WalletConfig {

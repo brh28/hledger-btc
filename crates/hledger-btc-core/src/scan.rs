@@ -5,7 +5,7 @@ use bdk_wallet::bitcoin::{Address, Network, Transaction};
 use bdk_wallet::chain::ChainPosition;
 
 use crate::config::{Config, WalletConfig};
-use crate::journal::{Account, JournalEntry, Posting, TagMap};
+use crate::journal::{Account, JournalEntry, Posting, TagMap, sum_commodity};
 use crate::persist::WalletStore;
 
 const STOP_GAP: usize = 20;
@@ -24,6 +24,10 @@ impl crate::source::Source for ElectrumSource<'_> {
     fn entries(&self) -> Result<Vec<JournalEntry>> {
         let mut all = Vec::new();
         for wallet in &self.cfg.wallets {
+            if wallet.archived {
+                tracing::info!("skipping archived wallet '{}'", wallet.wallet);
+                continue;
+            }
             all.extend(scan(self.cfg, wallet)?);
         }
         Ok(all)
@@ -122,14 +126,14 @@ fn build_entry(
         return None;
     }
 
-    let net: i64 = postings.iter().filter_map(|p| p.amount_sat).sum();
-    let (description, counterpart) = if net >= 0 {
+    let net = sum_commodity(&postings, "SAT");
+    let (description, counterpart) = if !net.is_negative() {
         ("Incoming BTC", "income:unknown")
     } else {
         ("Outgoing BTC", "expenses:unknown")
     };
 
-    if net < 0 {
+    if net.is_negative() {
         if let Ok(fee) = wallet.calculate_fee(tx) {
             let fee_sat = fee.to_sat() as i64;
             if fee_sat > 0 {
