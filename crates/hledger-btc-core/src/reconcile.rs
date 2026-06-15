@@ -71,6 +71,8 @@ fn process_block(lines: &[&str], notices: &[Notice]) -> (String, Option<Notice>,
         return (lines.join("\n"), None, Some(notice.clone()));
     };
 
+    let placeholder_account = lines[unknown_idx].trim();
+
     // Collect the accounts already explicitly present in this block.
     let existing_accounts: HashSet<&str> = lines.iter().skip(1)
         .filter(|l| (l.starts_with(' ') || l.starts_with('\t')) && !is_unknown_leg(l))
@@ -88,6 +90,14 @@ fn process_block(lines: &[&str], notices: &[Notice]) -> (String, Option<Notice>,
         .filter(|p| !existing_accounts.contains(p.account.as_str()))
         .collect();
 
+    // Incoming auto-balance leg: include if it differs from the placeholder
+    // being removed. This covers residual imbalance — e.g. a Coinbase withdrawal
+    // debits 100,000 SAT but the wallet only receives 99,500 SAT; the 500 SAT
+    // fee leaves the merged entry needing an `expenses:unknown` auto-balance even
+    // after the original `income:unknown` placeholder is removed.
+    let incoming_auto_balance: Option<&Posting> = notice.entry.postings.iter()
+        .find(|p| p.amount.is_none() && p.account != placeholder_account);
+
     let mut new_lines: Vec<String> = Vec::new();
 
     // Header with novel source stamps.
@@ -104,9 +114,14 @@ fn process_block(lines: &[&str], notices: &[Notice]) -> (String, Option<Notice>,
         }
     }
 
-    // Novel postings from the incoming entry.
+    // Novel explicit postings from the incoming entry.
     for p in novel_postings {
         new_lines.push(format_posting(p));
+    }
+
+    // Residual auto-balance from incoming entry (different account from removed placeholder).
+    if let Some(ab) = incoming_auto_balance {
+        new_lines.push(format_posting(ab));
     }
 
     (new_lines.join("\n"), Some(notice.clone()), None)
@@ -301,6 +316,37 @@ mod tests {
         assert!(journal.ends_with('\n'));
         let (out, _) = reconcile(&journal, &[swap_out_notice()]);
         assert!(out.ends_with('\n'));
+    }
+
+    #[test]
+    fn withdrawal_fee_residual_auto_balance_included() {
+        // Coinbase withdraws 100,000 SAT; wallet receives 99,500 SAT (500 SAT fee).
+        // Electrum saw only the receive: assets:bitcoin:wallet:addr +99,500 + income:unknown.
+        // Coinbase import notice has: assets:coinbase:btc -100,000 + expenses:unknown (residual).
+        // After reconcile: income:unknown removed, coinbase posting added, expenses:unknown kept.
+        let journal = format!(
+            "2026-06-12 * Incoming BTC  ; txid:{TXID}, source:electrum\n\
+             \tassets:bitcoin:wallet:addr    99500 SAT  ; vout:0\n\
+             \tincome:unknown\n"
+        );
+        let incoming = JournalEntry {
+            date: date(),
+            description: "Withdraw".to_string(),
+            tags: TagMap::new()
+                .add("txid", TXID)
+                .add("source", "electrum")
+                .add("source", "coinbase"),
+            postings: vec![
+                Posting::with_amount("assets:coinbase:btc", -100_000),
+                Posting::auto_balance("expenses:unknown"),
+            ],
+        };
+        let notice = make_notice("txid", TXID, &["coinbase"], &["electrum"], incoming);
+        let (out, result) = reconcile(&journal, &[notice]);
+        assert_eq!(result.applied.len(), 1);
+        assert!(!out.contains("income:unknown"), "income:unknown placeholder should be removed");
+        assert!(out.contains("assets:coinbase:btc"), "coinbase posting should be added");
+        assert!(out.contains("expenses:unknown"), "fee residual auto-balance should be kept");
     }
 
     #[test]

@@ -226,6 +226,7 @@ fn wallet_tx_to_entry(tx: &Value, account: &str) -> Result<Option<JournalEntry>>
         .with_context(|| format!("invalid date: {created_at}"))?;
     let amount_sat = btc_to_sat(amount_str)?;
     let btc_account = format!("{}:{}", account, currency.to_lowercase());
+    let is_lightning = tx["network"]["network_name"].as_str() == Some("lightning");
     let txid = tx["network"]["hash"].as_str().filter(|s| !s.is_empty());
     let description = tx["description"]
         .as_str()
@@ -239,6 +240,24 @@ fn wallet_tx_to_entry(tx: &Value, account: &str) -> Result<Option<JournalEntry>>
         tags = tags.add("txid", hash);
     }
 
+    if is_lightning {
+        if tx_type == "send" {
+            // Extract payment_hash from the BOLT11 invoice so this entry can be
+            // reconciled against Phoenix (which stamps payment_hash on received payments).
+            if let Some(invoice) = tx["to"]["address"].as_str() {
+                match bolt11_payment_hash(invoice) {
+                    Some(hash) => { tags = tags.add("payment_hash", hash); }
+                    None => tracing::warn!("could not decode payment_hash from BOLT11 invoice for coinbase_id:{id}"),
+                }
+            }
+        } else {
+            // Coinbase Lightning receives expose no payment hash — the API returns
+            // only `network: { status }` with no invoice or hash field. These entries
+            // carry only coinbase_id and cannot be reconciled against Phoenix.
+            tracing::debug!("coinbase_id:{id} is a Lightning receive; no payment_hash available for reconcile");
+        }
+    }
+
     Ok(Some(JournalEntry {
         date,
         description,
@@ -248,6 +267,89 @@ fn wallet_tx_to_entry(tx: &Value, account: &str) -> Result<Option<JournalEntry>>
             Posting::auto_balance(balance_account),
         ],
     }))
+}
+
+/// Extracts the payment hash from a BOLT11 invoice by decoding the bech32 data
+/// and scanning tagged fields for type `p` (value 1), which is the 256-bit
+/// payment hash encoded as 52 five-bit groups.
+fn bolt11_payment_hash(invoice: &str) -> Option<String> {
+    let invoice = invoice.to_lowercase();
+    let sep = invoice.rfind('1')?;
+    let encoded = &invoice[sep + 1..];
+    // Strip 6-char bech32 checksum.
+    let encoded = encoded.get(..encoded.len().checked_sub(6)?)?;
+
+    const CHARSET: &[u8] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+    let data: Vec<u8> = encoded.bytes()
+        .map(|b| CHARSET.iter().position(|&c| c == b).map(|i| i as u8))
+        .collect::<Option<Vec<_>>>()?;
+
+    // Skip 7-group timestamp. Signature (104 groups) + recovery (1) occupy the tail.
+    let mut pos = 7usize;
+    let tail = data.len().saturating_sub(105);
+
+    while pos + 3 <= tail {
+        let field_type = data[pos];
+        let field_len = ((data[pos + 1] as usize) << 5) | (data[pos + 2] as usize);
+        pos += 3;
+        if pos + field_len > data.len() { break; }
+
+        // Type p (bech32 value 1) is the payment hash; it is always 52 groups (260 bits).
+        if field_type == 1 && field_len == 52 {
+            let groups = &data[pos..pos + 52];
+            let mut bytes = [0u8; 32];
+            let mut bit_buf = 0u32;
+            let mut bit_count = 0u32;
+            let mut byte_idx = 0usize;
+            for &g in groups {
+                bit_buf = ((bit_buf << 5) | g as u32) & 0x1FFF;
+                bit_count += 5;
+                if bit_count >= 8 {
+                    bit_count -= 8;
+                    if byte_idx < 32 {
+                        bytes[byte_idx] = ((bit_buf >> bit_count) & 0xFF) as u8;
+                        byte_idx += 1;
+                    }
+                }
+            }
+            if byte_idx == 32 {
+                return Some(bytes.iter().map(|b| format!("{b:02x}")).collect());
+            }
+        }
+
+        pos += field_len;
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Invoice from a real Coinbase Lightning send (captured during API investigation).
+    // Payment hash decoded independently via https://lightningdecoder.com for comparison.
+    const SAMPLE_INVOICE: &str = "lnbc2m1p4qes04pp5wz5e0p2w4hn7vqhqrcn960fxvgkw8kafuxun300pkcvj6n84ttzqcqzyssp5l7v3r8cjquf63j5eamp4zs2ms87zy242twsm920zqfp8cwgjjl4s9q7sqqqqqqqqqqqqqqqqqqqsqqqqqysgqdqqmqz9gxqyjw5qrzjqwryaup9lh50kkranzgcdnn2fgvx390wgj5jd07rwr3vxeje0glclluk0z4rmzkwrvqqqqlgqqqqqeqqjqj07c8xg5lf4d8qzrq0ja5wp4txyxrhv8hz30q5r8rmdktqqp7qak6jc9w4fhaj4v9c9w5cj8qm60gcz7maggaa8v83dhayh4lsjm74cpf5294w";
+
+    #[test]
+    fn bolt11_payment_hash_extracts_32_byte_hex() {
+        let hash = bolt11_payment_hash(SAMPLE_INVOICE).expect("should decode");
+        assert_eq!(hash.len(), 64, "payment hash should be 32 bytes = 64 hex chars");
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()), "should be hex");
+    }
+
+    #[test]
+    fn bolt11_payment_hash_uppercase_invoice_ok() {
+        let hash_lower = bolt11_payment_hash(SAMPLE_INVOICE).unwrap();
+        let hash_upper = bolt11_payment_hash(&SAMPLE_INVOICE.to_uppercase()).unwrap();
+        assert_eq!(hash_lower, hash_upper);
+    }
+
+    #[test]
+    fn bolt11_payment_hash_invalid_returns_none() {
+        assert!(bolt11_payment_hash("not_an_invoice").is_none());
+        assert!(bolt11_payment_hash("").is_none());
+    }
 }
 
 fn btc_to_sat(s: &str) -> Result<i64> {
