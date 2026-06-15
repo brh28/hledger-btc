@@ -25,7 +25,7 @@ impl crate::source::Source for ElectrumSource<'_> {
         let mut all = Vec::new();
         for wallet in &self.cfg.wallets {
             if wallet.archived {
-                tracing::info!("skipping archived wallet '{}'", wallet.wallet);
+                tracing::info!("skipping archived wallet '{}'", wallet.name);
                 continue;
             }
             all.extend(scan(self.cfg, wallet)?);
@@ -35,7 +35,7 @@ impl crate::source::Source for ElectrumSource<'_> {
 }
 
 pub fn scan(cfg: &Config, wallet: &WalletConfig) -> Result<Vec<JournalEntry>> {
-    let network: Network = cfg.network.into();
+    let network: Network = cfg.scan.network.into();
 
     let mut db = WalletStore::load_or_create(&wallet.state_path())?;
 
@@ -45,19 +45,19 @@ pub fn scan(cfg: &Config, wallet: &WalletConfig) -> Result<Vec<JournalEntry>> {
         .load_wallet(&mut db)?
     {
         Some(w) => {
-            tracing::info!("loaded wallet '{}' from state ({:?})", wallet.wallet, wallet.state_path());
+            tracing::info!("loaded wallet '{}' from state ({:?})", wallet.name, wallet.state_path());
             w
         }
         None => {
-            tracing::info!("initializing new wallet '{}' on {:?}", wallet.wallet, network);
+            tracing::info!("initializing new wallet '{}' on {:?}", wallet.name, network);
             Wallet::create(wallet.ext_descriptor.clone(), wallet.int_descriptor())
                 .network(network)
                 .create_wallet(&mut db)?
         }
     };
 
-    tracing::info!("connecting to {}", cfg.server_url);
-    let client = BdkElectrumClient::new(electrum_client::Client::new(&cfg.server_url)?);
+    tracing::info!("connecting to {}", cfg.scan.server_url);
+    let client = BdkElectrumClient::new(electrum_client::Client::new(&cfg.scan.server_url)?);
 
     tracing::info!("scanning blockchain (stop_gap={STOP_GAP})…");
     let update = client.full_scan(bdk_wallet.start_full_scan(), STOP_GAP, BATCH_SIZE, true)?;

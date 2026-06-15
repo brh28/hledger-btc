@@ -1,2 +1,2 @@
 mod coinbase;
-pub use coinbase::{build, CoinbaseSource};
+pub use coinbase::{build, CoinbaseFeed};

@@ -1,5 +1,5 @@
 [package]
-name = "hledger-btc-lightning"
+name = "hledger-btc-phoenix"
 version = "0.1.0"
 edition = "2024"
 

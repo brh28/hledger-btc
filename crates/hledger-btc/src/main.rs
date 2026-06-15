@@ -6,9 +6,12 @@ use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
 use std::collections::BTreeMap;
-use hledger_btc_core::{annotate::{Annotation, AnnotationType}, config, export, import, journal, label, receive, trace};
+use hledger_btc_core::{annotate::{Annotation, AnnotationType}, export, import, journal, label, receive, scan::ElectrumSource, source::Source, trace};
+use hledger_btc_core::config::WalletConfig;
 
-mod sources;
+mod config;
+mod feeds;
+mod pipeline;
 
 #[derive(Parser)]
 #[command(name = "hledger-btc", about = "Bitcoin accounting for hledger")]
@@ -26,7 +29,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Scan all configured data sources and write new entries to the journal
+    /// Scan all configured wallets on-chain and write new entries to the journal
     Scan {
         /// Journal file to read for dedup; falls back to LEDGER_FILE, then ~/.hledger.journal
         #[arg(short = 'f', long = "file")]
@@ -35,10 +38,19 @@ enum Command {
         /// Journal file to append new entries to; defaults to the value of -f/--file
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
+    },
+    /// Import data into the journal
+    Import {
+        /// Journal file; falls back to LEDGER_FILE, then ~/.hledger.journal
+        #[arg(short = 'f', long = "file")]
+        journal: Option<PathBuf>,
 
-        /// Scan a single named source instead of all
-        #[arg(long)]
-        source: Option<String>,
+        /// Output file for new entries; defaults to -f/--file (unused by `labels`)
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+
+        #[command(subcommand)]
+        subcommand: ImportSubcommand,
     },
     /// Record a receiving address as a receivable in the journal
     Receive {
@@ -83,19 +95,6 @@ enum Command {
         #[arg(short = 'f', long = "file")]
         journal: Option<PathBuf>,
     },
-    /// Import BIP329 labels into hledger journal
-    Import {
-        /// Journal file to annotate; falls back to LEDGER_FILE, then ~/.hledger.journal
-        #[arg(short = 'f', long = "file")]
-        journal: Option<PathBuf>,
-
-        /// BIP329 JSONL file to read labels from; reads stdin if omitted
-        labels: Option<PathBuf>,
-
-        /// Replace existing label tags instead of skipping already-labelled entries
-        #[arg(long = "override")]
-        override_existing: bool,
-    },
     /// Export hledger journal to BIP329 labels
     Export {
         /// Journal file to read labels from; falls back to LEDGER_FILE, then ~/.hledger.journal
@@ -127,10 +126,52 @@ enum Command {
         #[command(subcommand)]
         subcommand: TagSubcommand,
     },
-    /// Manage the hledger-btc configuration file
+    /// Manage the hledger-btc configuration
     Config {
         #[command(subcommand)]
         subcommand: ConfigSubcommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ImportSubcommand {
+    /// Apply a BIP329 label file to the journal
+    Labels {
+        /// BIP329 JSONL file to read labels from; reads stdin if omitted
+        file: Option<PathBuf>,
+
+        /// Replace existing label tags instead of skipping already-labelled entries
+        #[arg(long = "override")]
+        override_existing: bool,
+    },
+    /// Import from a third-party feed provider
+    Feed {
+        #[command(subcommand)]
+        provider: FeedProvider,
+    },
+}
+
+#[derive(Subcommand)]
+enum FeedProvider {
+    #[cfg(feature = "phoenix")]
+    /// Import from a Phoenix Lightning wallet CSV export
+    Phoenix {
+        /// Path to Phoenix CSV export
+        #[arg(long)]
+        path: PathBuf,
+        /// Account sub-segment for journal postings (default: "phoenix")
+        #[arg(long)]
+        name: Option<String>,
+    },
+    #[cfg(feature = "coinbase")]
+    /// Import from Coinbase via API
+    Coinbase {
+        /// Path to CDP API key file; overrides config
+        #[arg(long)]
+        key_file: Option<PathBuf>,
+        /// Account sub-segment and config entry name (default: first coinbase entry in config)
+        #[arg(long)]
+        name: Option<String>,
     },
 }
 
@@ -164,7 +205,7 @@ enum ConfigSubcommand {
     Path,
     /// Print the current configuration
     Show,
-    /// Set top-level configuration fields
+    /// Set configuration fields
     Set {
         /// Bitcoin network: bitcoin, testnet, signet, regtest
         #[arg(long)]
@@ -175,7 +216,7 @@ enum ConfigSubcommand {
         /// Client type (default: electrum)
         #[arg(long)]
         client_type: Option<String>,
-        /// Base account prefix for all wallet postings (default: assets:bitcoin)
+        /// Base account prefix for all wallet and feed postings
         #[arg(long)]
         base_account: Option<String>,
     },
@@ -184,16 +225,16 @@ enum ConfigSubcommand {
         #[command(subcommand)]
         subcommand: WalletSubcommand,
     },
-    /// Manage data sources in the configuration
-    Source {
+    /// Manage feeds in the configuration
+    Feed {
         #[command(subcommand)]
-        subcommand: SourceSubcommand,
+        subcommand: FeedSubcommand,
     },
 }
 
 #[derive(Subcommand)]
-enum SourceSubcommand {
-    /// List configured data sources
+enum FeedSubcommand {
+    /// List configured feeds
     List,
 }
 
@@ -248,13 +289,6 @@ fn resolve_config(explicit: Option<PathBuf>) -> PathBuf {
     explicit.unwrap_or_else(config::config_path)
 }
 
-fn write_config(path: &PathBuf, cfg: &config::Config) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, toml::to_string_pretty(cfg)?)
-        .map_err(Into::into)
-}
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -272,24 +306,75 @@ fn main() -> Result<()> {
     let config_path = resolve_config(cli.config);
 
     match cli.command {
-        Command::Scan { journal, output, source } => {
-            let full = sources::load_full(&config_path)?;
-            let mut srcs = sources::build(&full.core, &full.sources)?;
-            if let Some(name) = source {
-                anyhow::ensure!(
-                    srcs.iter().any(|s| s.name() == name),
-                    "unknown source '{name}' (see `hledger-btc config source list`)"
-                );
-                srcs.retain(|s| s.name() == name);
-            }
-
+        Command::Scan { journal, output } => {
+            let config = config::load(&config_path)?;
+            let cfg = config.to_core();
+            let srcs: Vec<Box<dyn Source + '_>> = if cfg.wallets.is_empty() {
+                vec![]
+            } else {
+                vec![Box::new(ElectrumSource { cfg: &cfg })]
+            };
             let journal_path = resolve_journal(journal);
             let output_path = output.unwrap_or_else(|| journal_path.clone());
-            sources::run_pipeline(&srcs, &journal_path, &output_path)?;
+            pipeline::run_pipeline(&srcs, &journal_path, &output_path)?;
+        }
+        Command::Import { journal, output, subcommand } => {
+            let journal_path = resolve_journal(journal);
+            match subcommand {
+                ImportSubcommand::Labels { file, override_existing } => {
+                    if !journal_path.exists() {
+                        anyhow::bail!("journal file does not exist: {}", journal_path.display());
+                    }
+                    let bip329_content = match file {
+                        Some(path) => std::fs::read_to_string(path)?,
+                        None => {
+                            let mut buf = String::new();
+                            std::io::stdin().read_to_string(&mut buf)?;
+                            buf
+                        }
+                    };
+                    let journal_content = std::fs::read_to_string(&journal_path)?;
+                    let updated = import::import_from_str(&journal_content, &bip329_content, override_existing)?;
+                    std::fs::write(&journal_path, updated)?;
+                    tracing::info!("labels imported into {}", journal_path.display());
+                }
+                ImportSubcommand::Feed { provider } => {
+                    let config = config::load(&config_path).ok();
+                    let base = config.as_ref()
+                        .map(|c| c.base_account.clone())
+                        .unwrap_or_else(|| journal::Account::new("assets"));
+
+                    let feed: Box<dyn Source + 'static> = match provider {
+                        #[cfg(feature = "phoenix")]
+                        FeedProvider::Phoenix { path, name } => {
+                            let account = base.append(name.as_deref().unwrap_or("phoenix"));
+                            Box::new(hledger_btc_phoenix::PhoenixFeed::new(path, account))
+                        }
+                        #[cfg(feature = "coinbase")]
+                        FeedProvider::Coinbase { key_file, name } => match key_file {
+                            Some(kf) => {
+                                let account = base.append(name.as_deref().unwrap_or("coinbase"));
+                                Box::new(hledger_btc_coinbase::CoinbaseFeed::new(&kf, account)?)
+                            }
+                            None => {
+                                let config = config.ok_or_else(|| anyhow::anyhow!(
+                                    "no --key-file given and no config found; use --key-file to import without configuring"
+                                ))?;
+                                let entry = config.find_feed("coinbase", name.as_deref())?;
+                                feeds::build_feed(&config.to_core(), entry)?
+                            }
+                        },
+                    };
+
+                    let srcs: Vec<Box<dyn Source + '_>> = vec![feed];
+                    let output_path = output.unwrap_or_else(|| journal_path.clone());
+                    pipeline::run_pipeline(&srcs, &journal_path, &output_path)?;
+                }
+            }
         }
         Command::Receive { journal, address, account, date, description, amount, unit_price, total_cost } => {
             let resolved_account = account.or_else(|| {
-                config::load(&config_path).ok().map(|cfg| cfg.base_account.to_string())
+                config::load(&config_path).ok().map(|c| c.base_account.to_string())
             });
 
             let price = match (unit_price, total_cost) {
@@ -328,28 +413,6 @@ fn main() -> Result<()> {
                     println!("{block}\n");
                 }
             }
-        }
-        Command::Import { journal, labels, override_existing } => {
-            let journal_path = resolve_journal(journal);
-
-            if !journal_path.exists() {
-                anyhow::bail!("journal file does not exist: {}", journal_path.display());
-            }
-
-            let bip329_content = match labels {
-                Some(path) => std::fs::read_to_string(path)?,
-                None => {
-                    let mut buf = String::new();
-                    std::io::stdin().read_to_string(&mut buf)?;
-                    buf
-                }
-            };
-
-            let journal_content = std::fs::read_to_string(&journal_path)?;
-            let updated = import::import_from_str(&journal_content, &bip329_content, override_existing)?;
-            std::fs::write(&journal_path, updated)?;
-
-            tracing::info!("labels imported into {}", journal_path.display());
         }
         Command::Export { journal, output } => {
             let journal_path = resolve_journal(journal);
@@ -412,15 +475,27 @@ fn main() -> Result<()> {
                 let table = value.as_table_mut()
                     .ok_or_else(|| anyhow::anyhow!("invalid config format"))?;
 
-                if let Some(v) = network     { table.insert("network".to_string(),      toml::Value::String(v)); }
-                if let Some(v) = server_url  { table.insert("server_url".to_string(),   toml::Value::String(v)); }
-                if let Some(v) = client_type { table.insert("client_type".to_string(),  toml::Value::String(v)); }
-                if let Some(v) = base_account { table.insert("base_account".to_string(), toml::Value::String(v)); }
+                if let Some(v) = base_account {
+                    table.insert("base_account".to_string(), toml::Value::String(v));
+                }
 
+                if network.is_some() || server_url.is_some() || client_type.is_some() {
+                    let scan = table.entry("scan".to_string())
+                        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+                    let scan_table = scan.as_table_mut()
+                        .ok_or_else(|| anyhow::anyhow!("'scan' in config must be a table"))?;
+                    if let Some(v) = network     { scan_table.insert("network".to_string(),    toml::Value::String(v)); }
+                    if let Some(v) = server_url  { scan_table.insert("server_url".to_string(), toml::Value::String(v)); }
+                    if let Some(v) = client_type { scan_table.insert("client_type".to_string(), toml::Value::String(v)); }
+                }
+
+                let scan_table = table.get("scan").and_then(|s| s.as_table());
                 for field in ["network", "server_url"] {
-                    if !table.contains_key(field) {
-                        anyhow::bail!("missing required field '{field}' — set it with --{}", field.replace('_', "-"));
-                    }
+                    anyhow::ensure!(
+                        scan_table.map(|t| t.contains_key(field)).unwrap_or(false),
+                        "missing required field 'scan.{field}' — set it with --{}",
+                        field.replace('_', "-")
+                    );
                 }
 
                 if let Some(parent) = config_path.parent() {
@@ -429,48 +504,48 @@ fn main() -> Result<()> {
                 std::fs::write(&config_path, toml::to_string_pretty(&value)?)?;
                 println!("config written to {}", config_path.display());
             }
-            ConfigSubcommand::Source { subcommand: source_sub } => match source_sub {
-                SourceSubcommand::List => {
-                    let full = sources::load_full(&config_path)?;
-                    if !full.core.wallets.is_empty() {
-                        let wallets: Vec<&str> = full.core.wallets.iter().map(|w| w.wallet.as_str()).collect();
-                        println!("electrum (built-in): wallets {}", wallets.join(", "));
+            ConfigSubcommand::Feed { subcommand: feed_sub } => match feed_sub {
+                FeedSubcommand::List => {
+                    let config = config::load(&config_path)?;
+                    if !config.wallets.is_empty() {
+                        let names: Vec<&str> = config.wallets.iter().map(|w| w.name.as_str()).collect();
+                        println!("electrum (built-in): wallets {}", names.join(", "));
                     }
-                    for s in &full.sources {
-                        println!("{}", s.type_);
+                    for f in &config.feeds {
+                        println!("{} ({})", f.name, f.provider);
                     }
                 }
             },
             ConfigSubcommand::Wallet { subcommand: wallet_sub } => match wallet_sub {
                 WalletSubcommand::Add { name, descriptor } => {
-                    let mut cfg = config::load(&config_path)?;
+                    let mut config = config::load(&config_path)?;
 
-                    if cfg.wallets.iter().any(|w| w.wallet == name) {
+                    if config.wallets.iter().any(|w| w.name == name) {
                         anyhow::bail!("wallet '{name}' already exists in config");
                     }
 
-                    cfg.wallets.push(config::WalletConfig {
-                        wallet: name.clone(),
+                    config.wallets.push(WalletConfig {
+                        name: name.clone(),
                         ext_descriptor: descriptor,
                         int_descriptor: None,
                         state_file: None,
                         archived: false,
                     });
 
-                    write_config(&config_path, &cfg)?;
+                    config.write(&config_path)?;
                     println!("wallet '{name}' added");
                 }
                 WalletSubcommand::Remove { name } => {
-                    let mut cfg = config::load(&config_path)?;
+                    let mut config = config::load(&config_path)?;
 
-                    let before = cfg.wallets.len();
-                    cfg.wallets.retain(|w| w.wallet != name);
+                    let before = config.wallets.len();
+                    config.wallets.retain(|w| w.name != name);
 
-                    if cfg.wallets.len() == before {
+                    if config.wallets.len() == before {
                         anyhow::bail!("wallet '{name}' not found in config");
                     }
 
-                    write_config(&config_path, &cfg)?;
+                    config.write(&config_path)?;
                     println!("wallet '{name}' removed");
                 }
             },

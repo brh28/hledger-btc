@@ -783,7 +783,7 @@ dependencies = [
  "dirs",
  "hledger-btc-coinbase",
  "hledger-btc-core",
- "hledger-btc-lightning",
+ "hledger-btc-phoenix",
  "serde",
  "toml",
  "tracing",
@@ -828,7 +828,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "hledger-btc-lightning"
+name = "hledger-btc-phoenix"
 version = "0.1.0"
 dependencies = [
  "anyhow",

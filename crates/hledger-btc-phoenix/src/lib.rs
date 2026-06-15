@@ -7,20 +7,20 @@ use serde::Deserialize;
 use hledger_btc_core::journal::{Account, JournalEntry};
 use hledger_btc_core::source::Source;
 
-pub struct PhoenixSource {
+pub struct PhoenixFeed {
     path: PathBuf,
     account: Account,
 }
 
-impl PhoenixSource {
+impl PhoenixFeed {
     pub fn new(path: PathBuf, account: Account) -> Self {
         Self { path, account }
     }
 }
 
-impl Source for PhoenixSource {
+impl Source for PhoenixFeed {
     fn name(&self) -> &str {
-        "lightning.phoenix"
+        "phoenix"
     }
 
     fn entries(&self) -> Result<Vec<JournalEntry>> {
@@ -38,6 +38,6 @@ struct PhoenixConfig {
 pub fn build(config: &toml::Table, account: Account) -> Result<Box<dyn Source + 'static>> {
     let cfg: PhoenixConfig = toml::Value::Table(config.clone())
         .try_into()
-        .context("invalid lightning.phoenix config")?;
-    Ok(Box::new(PhoenixSource::new(cfg.path, account)))
+        .context("invalid phoenix config")?;
+    Ok(Box::new(PhoenixFeed::new(cfg.path, account)))
 }

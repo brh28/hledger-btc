@@ -14,12 +14,12 @@ struct Credentials {
     private_key: String,
 }
 
-pub struct CoinbaseSource {
+pub struct CoinbaseFeed {
     account: Account,
     creds: Credentials,
 }
 
-impl CoinbaseSource {
+impl CoinbaseFeed {
     pub fn new(key_file: &Path, account: Account) -> Result<Self> {
         let creds = load_credentials(key_file)?;
         Ok(Self { account, creds })
@@ -133,7 +133,7 @@ impl CoinbaseSource {
     }
 }
 
-impl Source for CoinbaseSource {
+impl Source for CoinbaseFeed {
     fn name(&self) -> &str {
         "coinbase"
     }
@@ -156,7 +156,7 @@ pub fn build(config: &toml::Table, account: Account) -> Result<Box<dyn Source + 
     let cfg: CoinbaseConfig = toml::Value::Table(config.clone())
         .try_into()
         .context("invalid coinbase config")?;
-    Ok(Box::new(CoinbaseSource::new(&cfg.key_file, account)?))
+    Ok(Box::new(CoinbaseFeed::new(&cfg.key_file, account)?))
 }
 
 fn load_credentials(key_file: &Path) -> Result<Credentials> {

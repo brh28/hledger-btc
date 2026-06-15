@@ -3,15 +3,21 @@ use std::path::PathBuf;
 
 use crate::journal::Account;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
-    pub network: Network,
-    #[serde(default = "default_client_type")]
-    pub client_type: ClientType,
-    pub server_url: String,
     #[serde(default = "default_base_account")]
     pub base_account: Account,
+    pub scan: ScanConfig,
+    #[serde(default)]
     pub wallets: Vec<WalletConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ScanConfig {
+    pub network: Network,
+    pub server_url: String,
+    #[serde(default = "default_client_type")]
+    pub client_type: ClientType,
 }
 
 fn default_client_type() -> ClientType {
@@ -22,9 +28,9 @@ fn default_base_account() -> Account {
     Account::new("assets")
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WalletConfig {
-    pub wallet: String,
+    pub name: String,
     pub ext_descriptor: String,
     pub int_descriptor: Option<String>,
     pub state_file: Option<PathBuf>,
@@ -44,12 +50,12 @@ impl WalletConfig {
             dirs::data_local_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("hledger-btc")
-                .join(format!("{}.db", self.wallet))
+                .join(format!("{}.db", self.name))
         })
     }
 
     pub fn account_name(&self, base_account: &Account) -> Account {
-        base_account.append(&self.wallet)
+        base_account.append(&self.name)
     }
 }
 
@@ -81,22 +87,9 @@ impl From<Network> for bdk_wallet::bitcoin::Network {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ClientType {
     Electrum,
 }
 
-pub fn config_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("hledger-btc")
-        .join("config.toml")
-}
-
-pub fn load(path: &PathBuf) -> anyhow::Result<Config> {
-    anyhow::ensure!(path.exists(), "config not found at {path:?}");
-    tracing::info!("loading config from {:?}", path);
-    let raw = std::fs::read_to_string(path)?;
-    toml::from_str(&raw).map_err(Into::into)
-}
