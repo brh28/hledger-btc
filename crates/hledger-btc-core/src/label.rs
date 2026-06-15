@@ -1,5 +1,5 @@
-use std::str::FromStr;
 use crate::annotate::AnnotationType;
+use crate::text::{extract_tag, extract_int_tag, extract_address_from_account};
 
 pub fn set_label(
     journal_content: &str,
@@ -118,30 +118,6 @@ fn find_first_tag_start(s: &str) -> usize {
     s.len()
 }
 
-fn extract_tag(line: &str, key: &str) -> Option<String> {
-    let needle = format!("{key}:");
-    let start = line.find(&needle)? + needle.len();
-    let rest = &line[start..];
-    let end = rest.find([',', ' ']).unwrap_or(rest.len());
-    Some(rest[..end].to_string())
-}
-
-fn extract_int_tag(line: &str, key: &str) -> Option<String> {
-    let needle = format!("{key}:");
-    let start = line.find(&needle)? + needle.len();
-    let rest = &line[start..];
-    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
-    if end == 0 { return None; }
-    Some(rest[..end].to_string())
-}
-
-fn extract_address_from_account(line: &str) -> Option<String> {
-    let trimmed = line.trim_start();
-    let end = trimmed.find("  ").or_else(|| trimmed.find('\t')).unwrap_or(trimmed.len());
-    let account = trimmed[..end].trim_end();
-    let last = account.split(':').last()?;
-    bdk_wallet::bitcoin::Address::from_str(last).ok().map(|_| last.to_string())
-}
 
 fn finish(original: &str, lines: Vec<String>) -> String {
     let mut out = lines.join("\n");

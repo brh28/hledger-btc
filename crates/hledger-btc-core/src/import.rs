@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
-use std::str::FromStr;
 use anyhow::Result;
 
 use crate::annotate::{Annotation, AnnotationType};
+use crate::text::{extract_tag, extract_int_tag, extract_address_from_account, set_tag};
 
 pub fn import_from_str(
     journal_content: &str,
@@ -210,51 +210,7 @@ fn find_tag_start(comment: &str) -> usize {
     comment.len()
 }
 
-fn set_tag(line: &str, key: &str, value: &str, override_existing: bool) -> String {
-    let needle = format!("{key}:");
-    if let Some(start) = line.find(&needle) {
-        if !override_existing {
-            return line.to_string();
-        }
-        let val_start = start + needle.len();
-        let val_end = line[val_start..]
-            .find([',', '\n'])
-            .map(|i| val_start + i)
-            .unwrap_or(line.len());
-        return format!("{}{}{}", &line[..val_start], value, &line[val_end..]);
-    }
 
-    if line.contains("  ; ") {
-        format!("{}, {}:{}", line, key, value)
-    } else {
-        format!("{}  ; {}:{}", line, key, value)
-    }
-}
-
-fn extract_address_from_account(line: &str) -> Option<String> {
-    let trimmed = line.trim_start();
-    let end = trimmed.find("  ").or_else(|| trimmed.find('\t')).unwrap_or(trimmed.len());
-    let account = trimmed[..end].trim_end();
-    let last = account.split(':').last()?;
-    bdk_wallet::bitcoin::Address::from_str(last).ok().map(|_| last.to_string())
-}
-
-fn extract_tag(line: &str, key: &str) -> Option<String> {
-    let needle = format!("{key}:");
-    let start = line.find(&needle)? + needle.len();
-    let rest = &line[start..];
-    let end = rest.find(',').unwrap_or(rest.len());
-    Some(rest[..end].trim_end().to_string())
-}
-
-fn extract_int_tag(line: &str, key: &str) -> Option<String> {
-    let needle = format!("{key}:");
-    let start = line.find(&needle)? + needle.len();
-    let rest = &line[start..];
-    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
-    if end == 0 { return None; }
-    Some(rest[..end].to_string())
-}
 
 #[cfg(test)]
 mod tests {

@@ -11,26 +11,20 @@ use crate::persist::WalletStore;
 const STOP_GAP: usize = 20;
 const BATCH_SIZE: usize = 5;
 
-/// The built-in on-chain source: scans every configured wallet via Electrum.
-pub struct ElectrumSource<'a> {
+/// A single configured wallet as a source; name is the wallet name so that
+/// per-wallet source stamps are distinct in the journal.
+pub struct WalletSource<'a> {
     pub cfg: &'a Config,
+    pub wallet: &'a WalletConfig,
 }
 
-impl crate::source::Source for ElectrumSource<'_> {
+impl crate::source::Source for WalletSource<'_> {
     fn name(&self) -> &str {
-        "electrum"
+        &self.wallet.name
     }
 
     fn entries(&self) -> Result<Vec<JournalEntry>> {
-        let mut all = Vec::new();
-        for wallet in &self.cfg.wallets {
-            if wallet.archived {
-                tracing::info!("skipping archived wallet '{}'", wallet.name);
-                continue;
-            }
-            all.extend(scan(self.cfg, wallet)?);
-        }
-        Ok(all)
+        scan(self.cfg, self.wallet)
     }
 }
 

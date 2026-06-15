@@ -101,11 +101,14 @@ impl KnownKeys {
     }
 }
 
+#[derive(Clone)]
 pub struct Notice {
     pub key: String,
     pub value: String,
     pub novel_sources: Vec<String>,
     pub recorded_sources: Vec<String>,
+    /// The full incoming entry (post-merge) carried for Phase 2 reconcile.
+    pub entry: JournalEntry,
 }
 
 impl fmt::Display for Notice {
@@ -167,7 +170,7 @@ pub fn plan(entries: Vec<JournalEntry>, known: &KnownKeys) -> ScanPlan {
         if !recorded.is_empty() && !novel.is_empty() {
             let mut recorded_sources: Vec<String> = recorded.into_iter().collect();
             recorded_sources.sort();
-            notices.push(Notice { key, value, novel_sources: novel, recorded_sources });
+            notices.push(Notice { key, value, novel_sources: novel, recorded_sources, entry });
         }
     }
 

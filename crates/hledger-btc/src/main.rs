@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
 use std::collections::BTreeMap;
-use hledger_btc_core::{annotate::{Annotation, AnnotationType}, export, import, journal, label, receive, scan::ElectrumSource, source::Source, trace};
+use hledger_btc_core::{annotate::{Annotation, AnnotationType}, export, import, journal, label, receive, scan::WalletSource, source::Source, trace};
 use hledger_btc_core::config::WalletConfig;
 
 mod config;
@@ -38,6 +38,10 @@ enum Command {
         /// Journal file to append new entries to; defaults to the value of -f/--file
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
+
+        /// Skip reconciling existing entries with novel source data
+        #[arg(long)]
+        no_reconcile: bool,
     },
     /// Import data into the journal
     Import {
@@ -48,6 +52,10 @@ enum Command {
         /// Output file for new entries; defaults to -f/--file (unused by `labels`)
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
+
+        /// Skip reconciling existing entries with novel source data
+        #[arg(long)]
+        no_reconcile: bool,
 
         #[command(subcommand)]
         subcommand: ImportSubcommand,
@@ -306,19 +314,18 @@ fn main() -> Result<()> {
     let config_path = resolve_config(cli.config);
 
     match cli.command {
-        Command::Scan { journal, output } => {
+        Command::Scan { journal, output, no_reconcile } => {
             let config = config::load(&config_path)?;
             let cfg = config.to_core();
-            let srcs: Vec<Box<dyn Source + '_>> = if cfg.wallets.is_empty() {
-                vec![]
-            } else {
-                vec![Box::new(ElectrumSource { cfg: &cfg })]
-            };
+            let srcs: Vec<Box<dyn Source + '_>> = cfg.wallets.iter()
+                .filter(|w| !w.archived)
+                .map(|w| Box::new(WalletSource { cfg: &cfg, wallet: w }) as Box<dyn Source + '_>)
+                .collect();
             let journal_path = resolve_journal(journal);
             let output_path = output.unwrap_or_else(|| journal_path.clone());
-            pipeline::run_pipeline(&srcs, &journal_path, &output_path)?;
+            pipeline::run_pipeline(&srcs, &journal_path, &output_path, !no_reconcile)?;
         }
-        Command::Import { journal, output, subcommand } => {
+        Command::Import { journal, output, no_reconcile, subcommand } => {
             let journal_path = resolve_journal(journal);
             match subcommand {
                 ImportSubcommand::Labels { file, override_existing } => {
@@ -368,7 +375,7 @@ fn main() -> Result<()> {
 
                     let srcs: Vec<Box<dyn Source + '_>> = vec![feed];
                     let output_path = output.unwrap_or_else(|| journal_path.clone());
-                    pipeline::run_pipeline(&srcs, &journal_path, &output_path)?;
+                    pipeline::run_pipeline(&srcs, &journal_path, &output_path, !no_reconcile)?;
                 }
             }
         }
