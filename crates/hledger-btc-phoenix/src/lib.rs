@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use hledger_btc_core::journal::{Account, JournalEntry};
-use hledger_btc_core::source::Source;
+use hledger_btc_core::journal::Account;
+use hledger_btc_core::source::{FeedEntry, Source};
 
 pub struct PhoenixFeed {
     path: PathBuf,
@@ -23,7 +23,7 @@ impl Source for PhoenixFeed {
         "phoenix"
     }
 
-    fn entries(&self) -> Result<Vec<JournalEntry>> {
+    fn entries(&self) -> Result<Vec<FeedEntry>> {
         let file = std::fs::File::open(&self.path)
             .with_context(|| format!("failed to open {}", self.path.display()))?;
         phoenix::parse(file, self.account.as_str())

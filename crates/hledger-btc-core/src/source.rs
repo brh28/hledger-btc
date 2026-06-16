@@ -1,77 +1,100 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::{BufRead, BufReader, Read};
-use std::path::PathBuf;
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use crate::journal::{JournalEntry, DEDUP_KEYS};
 
 /// Tag stamped on every entry recording which source produced it.
 pub const SOURCE_TAG: &str = "source";
 
-/// A data source that produces journal entries: the electrum scanner,
-/// a lightning wallet export, an exchange fetcher, etc.
+/// A data source that produces feed entries.
 pub trait Source {
     fn name(&self) -> &str;
-    fn entries(&self) -> Result<Vec<JournalEntry>>;
+    fn entries(&self) -> Result<Vec<FeedEntry>>;
 }
 
-/// A file-backed source: opens its path and hands the file to a
-/// format-specific parser, so format crates only need to expose a parse
-/// function.
-pub struct FileSource<F> {
-    name: String,
-    path: PathBuf,
-    parse: F,
+/// The dedup identity of a feed entry. `collect()` reads this to stamp the
+/// correct tag automatically — feed implementors must not stamp dedup tags
+/// manually on the inner `JournalEntry`.
+#[derive(Clone)]
+pub enum EntryKind {
+    /// On-chain transaction. Stamps `txid:<value>` and participates in
+    /// cross-source reconciliation with wallet scan entries.
+    OnChain { txid: String },
+    /// Lightning payment. Stamps `payment_hash:<value>` and participates in
+    /// cross-source reconciliation with Phoenix entries.
+    Lightning { payment_hash: String },
+    /// Exchange-internal transaction with no on-chain footprint (e.g. a
+    /// trade). Stamps `<key>:<value>`. Use only for entries that will never
+    /// appear in a wallet scan — using this for withdrawals/deposits silently
+    /// breaks cross-source reconciliation.
+    Internal { key: &'static str, id: String },
 }
 
-impl<F> FileSource<F>
-where
-    F: Fn(std::fs::File) -> Result<Vec<JournalEntry>>,
-{
-    pub fn new(name: impl Into<String>, path: PathBuf, parse: F) -> Self {
-        FileSource { name: name.into(), path, parse }
+/// A journal entry produced by a feed, paired with its dedup identity.
+#[derive(Clone)]
+pub struct FeedEntry {
+    pub journal: JournalEntry,
+    pub kind: EntryKind,
+}
+
+impl FeedEntry {
+    pub fn onchain(txid: String, journal: JournalEntry) -> Self {
+        Self { journal, kind: EntryKind::OnChain { txid } }
     }
-}
 
-impl<F> Source for FileSource<F>
-where
-    F: Fn(std::fs::File) -> Result<Vec<JournalEntry>>,
-{
-    fn name(&self) -> &str {
-        &self.name
+    pub fn lightning(payment_hash: String, journal: JournalEntry) -> Self {
+        Self { journal, kind: EntryKind::Lightning { payment_hash } }
     }
 
-    fn entries(&self) -> Result<Vec<JournalEntry>> {
-        let file = std::fs::File::open(&self.path)
-            .with_context(|| format!("failed to open {}", self.path.display()))?;
-        (self.parse)(file)
+    pub fn internal(key: &'static str, id: String, journal: JournalEntry) -> Self {
+        Self { journal, kind: EntryKind::Internal { key, id } }
     }
 }
 
 pub struct Collected {
     pub entries: Vec<JournalEntry>,
     pub failures: Vec<(String, anyhow::Error)>,
+    /// Dedup key names declared by Internal entries across all sources.
+    pub provider_keys: Vec<&'static str>,
 }
 
-/// Collects entries from all sources, stamping each entry with `source:<name>`.
-/// A failing source is reported, not fatal, so one unreachable source doesn't
-/// stop the others from being recorded.
+/// Collects entries from all sources, stamping each entry with its dedup tag
+/// (from `EntryKind`) and `source:<name>`. A failing source is reported but
+/// not fatal, so one unreachable source doesn't stop the others from recording.
 pub fn collect<'a>(sources: &[Box<dyn Source + 'a>]) -> Collected {
     let mut entries = Vec::new();
     let mut failures = Vec::new();
+    let mut provider_keys: Vec<&'static str> = Vec::new();
+
     for source in sources {
         match source.entries() {
-            Ok(mut batch) => {
-                for entry in &mut batch {
-                    entry.tags.push(SOURCE_TAG, source.name());
+            Ok(batch) => {
+                for mut feed_entry in batch {
+                    match &feed_entry.kind {
+                        EntryKind::OnChain { txid } => {
+                            feed_entry.journal.tags.push("txid", txid.clone());
+                        }
+                        EntryKind::Lightning { payment_hash } => {
+                            feed_entry.journal.tags.push("payment_hash", payment_hash.clone());
+                        }
+                        EntryKind::Internal { key, id } => {
+                            feed_entry.journal.tags.push(*key, id.clone());
+                            if !provider_keys.contains(key) {
+                                provider_keys.push(key);
+                            }
+                        }
+                    }
+                    feed_entry.journal.tags.push(SOURCE_TAG, source.name());
+                    entries.push(feed_entry.journal);
                 }
-                entries.extend(batch);
             }
             Err(err) => failures.push((source.name().to_string(), err)),
         }
     }
-    Collected { entries, failures }
+
+    Collected { entries, failures, provider_keys }
 }
 
 /// Dedup-key values already present in the journal, and which sources are
@@ -81,7 +104,7 @@ pub fn collect<'a>(sources: &[Box<dyn Source + 'a>]) -> Collected {
 pub struct KnownKeys(HashMap<(String, String), HashSet<String>>);
 
 impl KnownKeys {
-    pub fn parse(reader: impl Read) -> Result<Self> {
+    pub fn parse(reader: impl Read, provider_keys: &[&'static str]) -> Result<Self> {
         let mut map: HashMap<(String, String), HashSet<String>> = HashMap::new();
         for line in BufReader::new(reader).lines() {
             let line = line?;
@@ -89,7 +112,7 @@ impl KnownKeys {
                 continue;
             }
             let sources = extract_all(&line, SOURCE_TAG);
-            for key in DEDUP_KEYS {
+            for key in DEDUP_KEYS.iter().copied().chain(provider_keys.iter().copied()) {
                 if let Some(value) = extract_first(&line, key) {
                     map.entry((key.to_string(), value))
                         .or_default()
@@ -135,10 +158,11 @@ pub struct ScanPlan {
 }
 
 /// Splits collected entries into new ones to append and known ones to skip.
-/// A known entry whose sources are all already stamped on the journal entry
-/// (or whose journal entry predates stamping) is skipped silently; a known
-/// entry contributing a novel source produces a notice.
-pub fn plan(entries: Vec<JournalEntry>, known: &KnownKeys) -> ScanPlan {
+/// Checks both universal dedup keys (`DEDUP_KEYS`) and provider-specific keys
+/// collected from `Internal` entries. A known entry whose sources are all
+/// already stamped on the journal entry is skipped silently; a known entry
+/// contributing a novel source produces a notice.
+pub fn plan(entries: Vec<JournalEntry>, known: &KnownKeys, provider_keys: &[&'static str]) -> ScanPlan {
     let mut new_entries = Vec::new();
     let mut already_recorded = 0;
     let mut notices = Vec::new();
@@ -146,7 +170,7 @@ pub fn plan(entries: Vec<JournalEntry>, known: &KnownKeys) -> ScanPlan {
     for entry in entries {
         let mut matched: Option<(String, String)> = None;
         let mut recorded: HashSet<String> = HashSet::new();
-        for key in DEDUP_KEYS {
+        for key in DEDUP_KEYS.iter().copied().chain(provider_keys.iter().copied()) {
             if let Some(value) = entry.tags.get(key) {
                 if let Some(sources) = known.0.get(&(key.to_string(), value.to_string())) {
                     if matched.is_none() {
@@ -205,17 +229,17 @@ mod tests {
 
     struct Dummy {
         name: &'static str,
-        entries: Vec<JournalEntry>,
+        entries: Vec<FeedEntry>,
     }
 
     impl Source for Dummy {
         fn name(&self) -> &str { self.name }
-        fn entries(&self) -> Result<Vec<JournalEntry>> {
+        fn entries(&self) -> Result<Vec<FeedEntry>> {
             Ok(self.entries.clone())
         }
     }
 
-    fn entry(tags: TagMap) -> JournalEntry {
+    fn journal(tags: TagMap) -> JournalEntry {
         JournalEntry {
             date: NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(),
             description: "Test".to_string(),
@@ -225,20 +249,32 @@ mod tests {
     }
 
     fn stamped(tags: TagMap, source: &str) -> JournalEntry {
-        let mut e = entry(tags);
+        let mut e = journal(tags);
         e.tags.push(SOURCE_TAG, source);
         e
     }
 
     #[test]
-    fn collect_stamps_source_tag() {
+    fn collect_stamps_source_and_dedup_tags() {
         let sources: Vec<Box<dyn Source>> = vec![Box::new(Dummy {
             name: "phoenix",
-            entries: vec![entry(TagMap::new().add("payment_hash", "ph1"))],
+            entries: vec![FeedEntry::lightning("ph1".to_string(), journal(TagMap::new()))],
         })];
         let collected = collect(&sources);
         assert!(collected.failures.is_empty());
         assert_eq!(collected.entries[0].tags.get(SOURCE_TAG), Some("phoenix"));
+        assert_eq!(collected.entries[0].tags.get("payment_hash"), Some("ph1"));
+    }
+
+    #[test]
+    fn collect_stamps_internal_key_and_collects_provider_key() {
+        let sources: Vec<Box<dyn Source>> = vec![Box::new(Dummy {
+            name: "coinbase",
+            entries: vec![FeedEntry::internal("coinbase_id", "ord1".to_string(), journal(TagMap::new()))],
+        })];
+        let collected = collect(&sources);
+        assert_eq!(collected.entries[0].tags.get("coinbase_id"), Some("ord1"));
+        assert_eq!(collected.provider_keys, vec!["coinbase_id"]);
     }
 
     #[test]
@@ -246,13 +282,16 @@ mod tests {
         struct Failing;
         impl Source for Failing {
             fn name(&self) -> &str { "broken" }
-            fn entries(&self) -> Result<Vec<JournalEntry>> {
+            fn entries(&self) -> Result<Vec<FeedEntry>> {
                 anyhow::bail!("unreachable")
             }
         }
         let sources: Vec<Box<dyn Source>> = vec![
             Box::new(Failing),
-            Box::new(Dummy { name: "ok", entries: vec![entry(TagMap::new().add("txid", "t1"))] }),
+            Box::new(Dummy {
+                name: "ok",
+                entries: vec![FeedEntry::onchain("t1".to_string(), journal(TagMap::new()))],
+            }),
         ];
         let collected = collect(&sources);
         assert_eq!(collected.failures.len(), 1);
@@ -262,7 +301,7 @@ mod tests {
 
     #[test]
     fn parses_known_keys_with_sources() {
-        let journal = "\
+        let journal_text = "\
 2026-05-02 * Incoming BTC  ; txid:abc, source:electrum
     assets:bitcoin:w    4,000 sat  ; vout:1
     income:unknown
@@ -270,7 +309,7 @@ mod tests {
 2026-05-03 * Zap  ; payment_hash:ph1, source:phoenix, source:electrum
     assets:bitcoin:lightning    100 sat
 ";
-        let known = KnownKeys::parse(journal.as_bytes()).unwrap();
+        let known = KnownKeys::parse(journal_text.as_bytes(), &[]).unwrap();
         let abc = known.0.get(&("txid".to_string(), "abc".to_string())).unwrap();
         assert_eq!(abc.len(), 1);
         assert!(abc.contains("electrum"));
@@ -279,9 +318,16 @@ mod tests {
     }
 
     #[test]
+    fn parses_known_keys_with_provider_key() {
+        let journal_text = "2026-05-02 * Trade  ; coinbase_id:ord1, source:coinbase\n    assets:coinbase:usd    -100 USD\n";
+        let known = KnownKeys::parse(journal_text.as_bytes(), &["coinbase_id"]).unwrap();
+        assert!(known.0.contains_key(&("coinbase_id".to_string(), "ord1".to_string())));
+    }
+
+    #[test]
     fn plan_appends_unknown_entry() {
         let known = KnownKeys::default();
-        let plan = plan(vec![stamped(TagMap::new().add("txid", "t1"), "electrum")], &known);
+        let plan = plan(vec![stamped(TagMap::new().add("txid", "t1"), "electrum")], &known, &[]);
         assert_eq!(plan.new_entries.len(), 1);
         assert_eq!(plan.already_recorded, 0);
         assert!(plan.notices.is_empty());
@@ -291,7 +337,7 @@ mod tests {
     fn plan_skips_silently_when_source_already_stamped() {
         let mut known = KnownKeys::default();
         known.0.insert(("txid".into(), "t1".into()), HashSet::from(["electrum".to_string()]));
-        let plan = plan(vec![stamped(TagMap::new().add("txid", "t1"), "electrum")], &known);
+        let plan = plan(vec![stamped(TagMap::new().add("txid", "t1"), "electrum")], &known, &[]);
         assert!(plan.new_entries.is_empty());
         assert_eq!(plan.already_recorded, 1);
         assert!(plan.notices.is_empty());
@@ -301,7 +347,7 @@ mod tests {
     fn plan_notices_novel_source_for_known_key() {
         let mut known = KnownKeys::default();
         known.0.insert(("txid".into(), "t1".into()), HashSet::from(["electrum".to_string()]));
-        let plan = plan(vec![stamped(TagMap::new().add("txid", "t1"), "coinbase")], &known);
+        let plan = plan(vec![stamped(TagMap::new().add("txid", "t1"), "coinbase")], &known, &[]);
         assert!(plan.new_entries.is_empty());
         assert_eq!(plan.already_recorded, 1);
         assert_eq!(plan.notices.len(), 1);
@@ -310,13 +356,25 @@ mod tests {
     }
 
     #[test]
+    fn plan_uses_provider_key_for_dedup() {
+        let mut known = KnownKeys::default();
+        known.0.insert(("coinbase_id".into(), "ord1".into()), HashSet::from(["coinbase".to_string()]));
+        let plan = plan(
+            vec![stamped(TagMap::new().add("coinbase_id", "ord1"), "coinbase")],
+            &known,
+            &["coinbase_id"],
+        );
+        assert!(plan.new_entries.is_empty());
+        assert_eq!(plan.already_recorded, 1);
+    }
+
+    #[test]
     fn plan_skips_legacy_unstamped_entries_silently() {
         let mut known = KnownKeys::default();
         known.0.insert(("txid".into(), "t1".into()), HashSet::new());
-        let plan = plan(vec![stamped(TagMap::new().add("txid", "t1"), "phoenix")], &known);
+        let plan = plan(vec![stamped(TagMap::new().add("txid", "t1"), "phoenix")], &known, &[]);
         assert!(plan.new_entries.is_empty());
         assert_eq!(plan.already_recorded, 1);
         assert!(plan.notices.is_empty());
     }
-
 }

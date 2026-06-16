@@ -36,17 +36,12 @@ pub fn run_pipeline(
             "hledger print failed: {}",
             String::from_utf8_lossy(&out.stderr)
         );
-        source::KnownKeys::parse(&out.stdout[..])?
+        source::KnownKeys::parse(&out.stdout[..], &collected.provider_keys)?
     } else {
         source::KnownKeys::default()
     };
 
-    let plan = source::plan(merged, &known);
-
-    if !plan.new_entries.is_empty() {
-        let file = std::fs::OpenOptions::new().create(true).append(true).open(output_path)?;
-        journal::write_entries(&plan.new_entries, &mut BufWriter::new(file))?;
-    }
+    let plan = source::plan(merged, &known, &collected.provider_keys);
 
     let mut reconciled = 0usize;
     let mut conflicts = 0usize;
@@ -70,6 +65,11 @@ pub fn run_pipeline(
         for notice in &plan.notices {
             println!("notice: {notice}");
         }
+    }
+
+    if !plan.new_entries.is_empty() {
+        let file = std::fs::OpenOptions::new().create(true).append(true).open(output_path)?;
+        journal::write_entries(&plan.new_entries, &mut BufWriter::new(file))?;
     }
 
     println!(

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use hledger_btc_core::config::{Config, ScanConfig, WalletConfig};
 use hledger_btc_core::journal::Account;
 
-use crate::feeds::FeedEntry;
+use crate::feeds::FeedConfig;
 
 pub fn config_path() -> PathBuf {
     dirs::config_dir()
@@ -22,7 +22,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub wallets: Vec<WalletConfig>,
     #[serde(default)]
-    pub feeds: Vec<FeedEntry>,
+    pub feeds: Vec<FeedConfig>,
 }
 
 fn default_base_account() -> Account {
@@ -38,7 +38,7 @@ impl AppConfig {
         }
     }
 
-    pub fn find_feed(&self, provider: &str, name: Option<&str>) -> Result<&FeedEntry> {
+    pub fn find_feed(&self, provider: &str, name: Option<&str>) -> Result<&FeedConfig> {
         match name {
             Some(n) => self.feeds.iter()
                 .find(|f| f.name == n && f.provider == provider)

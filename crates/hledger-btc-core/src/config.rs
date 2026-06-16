@@ -55,7 +55,7 @@ impl WalletConfig {
     }
 
     pub fn account_name(&self, base_account: &Account) -> Account {
-        base_account.append(&self.name)
+        base_account.append("wallets").append(&self.name)
     }
 }
 

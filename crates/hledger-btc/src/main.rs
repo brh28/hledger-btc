@@ -423,12 +423,13 @@ fn main() -> Result<()> {
         }
         Command::Export { journal, output } => {
             let journal_path = resolve_journal(journal);
-
-            if !journal_path.exists() {
-                anyhow::bail!("journal file does not exist: {}", journal_path.display());
+            let hledger_out = std::process::Command::new("hledger")
+                .args(["-f", journal_path.to_str().unwrap(), "print"])
+                .output()?;
+            if !hledger_out.status.success() {
+                anyhow::bail!("hledger print failed: {}", String::from_utf8_lossy(&hledger_out.stderr));
             }
-
-            let journal_content = std::fs::read_to_string(&journal_path)?;
+            let journal_content = String::from_utf8(hledger_out.stdout)?;
             let bip329_output = export::export_to_string(&journal_content)?;
 
             match output {

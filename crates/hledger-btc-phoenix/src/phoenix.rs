@@ -4,6 +4,7 @@ use chrono::NaiveDate;
 use serde::Deserialize;
 
 use hledger_btc_core::journal::{JournalEntry, Posting, TagMap};
+use hledger_btc_core::source::FeedEntry;
 
 #[derive(Debug, Deserialize)]
 struct PhoenixRow {
@@ -30,7 +31,7 @@ struct PhoenixRow {
     description: String,
 }
 
-pub fn parse(reader: impl Read, account: &str) -> Result<Vec<JournalEntry>> {
+pub fn parse(reader: impl Read, account: &str) -> Result<Vec<FeedEntry>> {
     let mut reader = csv::Reader::from_reader(reader);
 
     let mut entries = Vec::new();
@@ -41,11 +42,11 @@ pub fn parse(reader: impl Read, account: &str) -> Result<Vec<JournalEntry>> {
         }
     }
 
-    entries.sort_by_key(|e| e.date);
+    entries.sort_by_key(|e| e.journal.date);
     Ok(entries)
 }
 
-fn row_to_entry(row: &PhoenixRow, account: &str) -> Result<Option<JournalEntry>> {
+fn row_to_entry(row: &PhoenixRow, account: &str) -> Result<Option<FeedEntry>> {
     let date = NaiveDate::parse_from_str(&row.date[..10], "%Y-%m-%d")
         .with_context(|| format!("invalid date: {}", row.date))?;
 
@@ -62,12 +63,12 @@ fn row_to_entry(row: &PhoenixRow, account: &str) -> Result<Option<JournalEntry>>
                 postings.push(Posting::with_amount("expenses:fees:lightning", service_fee_sat));
             }
             postings.push(Posting::auto_balance("income:unknown"));
-            JournalEntry {
+            FeedEntry::lightning(row.payment_hash.clone(), JournalEntry {
                 date,
                 description,
-                tags: TagMap::new().add("payment_hash", &row.payment_hash),
+                tags: TagMap::new(),
                 postings,
-            }
+            })
         }
         "lightning_sent" => {
             let amount_sat = row.amount_msat / 1000; // negative
@@ -82,12 +83,12 @@ fn row_to_entry(row: &PhoenixRow, account: &str) -> Result<Option<JournalEntry>>
                 postings.push(Posting::with_amount("expenses:fees:lightning", service_fee_sat));
             }
             postings.push(Posting::auto_balance("expenses:unknown"));
-            JournalEntry {
+            FeedEntry::lightning(row.payment_hash.clone(), JournalEntry {
                 date,
                 description,
-                tags: TagMap::new().add("payment_hash", &row.payment_hash),
+                tags: TagMap::new(),
                 postings,
-            }
+            })
         }
         "swap_in" => {
             let amount_sat = row.amount_msat / 1000;
@@ -95,13 +96,13 @@ fn row_to_entry(row: &PhoenixRow, account: &str) -> Result<Option<JournalEntry>>
             if row.mining_fee_sat > 0 {
                 postings.push(Posting::with_amount("expenses:fees:onchain", row.mining_fee_sat));
             }
-            postings.push(Posting::auto_balance("assets:bitcoin"));
-            JournalEntry {
+            postings.push(Posting::auto_balance("income:unknown"));
+            FeedEntry::onchain(row.tx_id.clone(), JournalEntry {
                 date,
                 description: "Swap In".to_string(),
-                tags: TagMap::new().add("txid", &row.tx_id),
+                tags: TagMap::new(),
                 postings,
-            }
+            })
         }
         "swap_out" => {
             // amount_msat is the full debit from the lightning balance and
@@ -116,13 +117,13 @@ fn row_to_entry(row: &PhoenixRow, account: &str) -> Result<Option<JournalEntry>>
             if service_fee_sat > 0 {
                 postings.push(Posting::with_amount("expenses:fees:lightning", service_fee_sat));
             }
-            postings.push(Posting::auto_balance("assets:bitcoin"));
-            JournalEntry {
+            postings.push(Posting::auto_balance("expenses:unknown"));
+            FeedEntry::onchain(row.tx_id.clone(), JournalEntry {
                 date,
                 description: "Swap Out".to_string(),
-                tags: TagMap::new().add("txid", &row.tx_id),
+                tags: TagMap::new(),
                 postings,
-            }
+            })
         }
         other => {
             tracing::warn!("unknown phoenix payment type: {other}, skipping");
@@ -142,6 +143,7 @@ mod tests {
     use super::*;
     use hledger_btc_core::journal::sum_commodity;
     use hledger_btc_core::money::Money;
+    use hledger_btc_core::source::EntryKind;
 
     const HEADER: &str = "date,id,type,amount_msat,amount_fiat,fee_credit_msat,mining_fee_sat,mining_fee_fiat,service_fee_msat,service_fee_fiat,payment_hash,tx_id,destination,description";
 
@@ -157,13 +159,13 @@ mod tests {
         let entries = parse(data.as_bytes(), ACCOUNT).unwrap();
         assert_eq!(entries.len(), 1);
         let e = &entries[0];
-        assert_eq!(e.description, "coffee refund");
-        assert_eq!(e.tags.get("payment_hash"), Some("ph1"));
+        assert!(matches!(&e.kind, EntryKind::Lightning { payment_hash } if payment_hash == "ph1"));
+        assert_eq!(e.journal.description, "coffee refund");
         // net into wallet = 100_000 sat gross - 1_000 sat fee
-        assert_eq!(e.postings[0].amount, Some(Money::sat(99_000)));
-        assert_eq!(e.postings[1].account, "expenses:fees:lightning");
-        assert_eq!(e.postings[1].amount, Some(Money::sat(1_000)));
-        assert_eq!(e.postings[2].account, "income:unknown");
+        assert_eq!(e.journal.postings[0].amount, Some(Money::sat(99_000)));
+        assert_eq!(e.journal.postings[1].account, "expenses:fees:lightning");
+        assert_eq!(e.journal.postings[1].amount, Some(Money::sat(1_000)));
+        assert_eq!(e.journal.postings[2].account, "income:unknown");
     }
 
     #[test]
@@ -171,10 +173,11 @@ mod tests {
         let data = csv(&["2026-05-02T09:00:00Z,2,lightning_sent,-50000000,-5 USD,0,0,0 USD,2000000,0.2 USD,ph2,,dest,"]);
         let entries = parse(data.as_bytes(), ACCOUNT).unwrap();
         let e = &entries[0];
-        assert_eq!(e.description, "Lightning Sent");
+        assert!(matches!(&e.kind, EntryKind::Lightning { payment_hash } if payment_hash == "ph2"));
+        assert_eq!(e.journal.description, "Lightning Sent");
         // total deducted = 50_000 payment + 2_000 fee
-        assert_eq!(e.postings[0].amount, Some(Money::sat(-52_000)));
-        assert_eq!(e.postings.last().unwrap().account, "expenses:unknown");
+        assert_eq!(e.journal.postings[0].amount, Some(Money::sat(-52_000)));
+        assert_eq!(e.journal.postings.last().unwrap().account, "expenses:unknown");
     }
 
     #[test]
@@ -182,11 +185,11 @@ mod tests {
         let data = csv(&["2026-05-03T08:00:00Z,3,swap_in,200000000,20 USD,0,500,0.05 USD,0,0 USD,,tx1,,"]);
         let entries = parse(data.as_bytes(), ACCOUNT).unwrap();
         let e = &entries[0];
-        assert_eq!(e.description, "Swap In");
-        assert_eq!(e.tags.get("txid"), Some("tx1"));
-        assert_eq!(e.postings[0].amount, Some(Money::sat(200_000)));
-        assert_eq!(e.postings[1].account, "expenses:fees:onchain");
-        assert_eq!(e.postings[1].amount, Some(Money::sat(500)));
+        assert!(matches!(&e.kind, EntryKind::OnChain { txid } if txid == "tx1"));
+        assert_eq!(e.journal.description, "Swap In");
+        assert_eq!(e.journal.postings[0].amount, Some(Money::sat(200_000)));
+        assert_eq!(e.journal.postings[1].account, "expenses:fees:onchain");
+        assert_eq!(e.journal.postings[1].amount, Some(Money::sat(500)));
     }
 
     #[test]
@@ -194,19 +197,18 @@ mod tests {
         let data = csv(&["2026-06-12T08:00:00Z,5,swap_out,-100000000,-10 USD,0,500,0.05 USD,0,0 USD,,tx2,bc1qdest,"]);
         let entries = parse(data.as_bytes(), ACCOUNT).unwrap();
         let e = &entries[0];
-        assert_eq!(e.description, "Swap Out");
-        assert_eq!(e.tags.get("txid"), Some("tx2"));
-        assert_eq!(e.tags.get("payment_hash"), None);
+        assert!(matches!(&e.kind, EntryKind::OnChain { txid } if txid == "tx2"));
+        assert_eq!(e.journal.description, "Swap Out");
         // full debit from lightning, fee included
-        assert_eq!(e.postings[0].amount, Some(Money::sat(-100_000)));
-        assert_eq!(e.postings[1].account, "expenses:fees:onchain");
-        assert_eq!(e.postings[1].amount, Some(Money::sat(500)));
+        assert_eq!(e.journal.postings[0].amount, Some(Money::sat(-100_000)));
+        assert_eq!(e.journal.postings[1].account, "expenses:fees:onchain");
+        assert_eq!(e.journal.postings[1].amount, Some(Money::sat(500)));
         // auto-balance receives |amount| - fee = 99_500 on-chain
-        let last = e.postings.last().unwrap();
-        assert_eq!(last.account, "assets:bitcoin");
+        let last = e.journal.postings.last().unwrap();
+        assert_eq!(last.account, "expenses:unknown");
         assert!(last.amount.is_none());
         // explicit postings sum to -(on-chain received)
-        assert_eq!(sum_commodity(&e.postings, "SAT"), Money::sat(-99_500));
+        assert_eq!(sum_commodity(&e.journal.postings, "SAT"), Money::sat(-99_500));
     }
 
     #[test]
@@ -223,7 +225,7 @@ mod tests {
             "2026-05-01T10:00:00Z,1,lightning_received,100000000,10 USD,0,0,0 USD,0,0 USD,ph1,,dest,",
         ]);
         let entries = parse(data.as_bytes(), ACCOUNT).unwrap();
-        assert_eq!(entries[0].tags.get("payment_hash"), Some("ph1"));
-        assert_eq!(entries[1].tags.get("payment_hash"), Some("ph2"));
+        assert!(matches!(&entries[0].kind, EntryKind::Lightning { payment_hash } if payment_hash == "ph1"));
+        assert!(matches!(&entries[1].kind, EntryKind::Lightning { payment_hash } if payment_hash == "ph2"));
     }
 }

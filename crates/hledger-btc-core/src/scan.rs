@@ -7,6 +7,7 @@ use bdk_wallet::chain::ChainPosition;
 use crate::config::{Config, WalletConfig};
 use crate::journal::{Account, JournalEntry, Posting, TagMap, sum_commodity};
 use crate::persist::WalletStore;
+use crate::source::FeedEntry;
 
 const STOP_GAP: usize = 20;
 const BATCH_SIZE: usize = 5;
@@ -23,12 +24,12 @@ impl crate::source::Source for WalletSource<'_> {
         &self.wallet.name
     }
 
-    fn entries(&self) -> Result<Vec<JournalEntry>> {
+    fn entries(&self) -> Result<Vec<FeedEntry>> {
         scan(self.cfg, self.wallet)
     }
 }
 
-pub fn scan(cfg: &Config, wallet: &WalletConfig) -> Result<Vec<JournalEntry>> {
+pub fn scan(cfg: &Config, wallet: &WalletConfig) -> Result<Vec<FeedEntry>> {
     let network: Network = cfg.scan.network.into();
 
     let mut db = WalletStore::load_or_create(&wallet.state_path())?;
@@ -59,7 +60,7 @@ pub fn scan(cfg: &Config, wallet: &WalletConfig) -> Result<Vec<JournalEntry>> {
     bdk_wallet.persist(&mut db)?;
 
     let base = wallet.account_name(&cfg.base_account);
-    let mut entries: Vec<JournalEntry> = bdk_wallet
+    let mut entries: Vec<FeedEntry> = bdk_wallet
         .transactions()
         .filter_map(|tx| {
             let ChainPosition::Confirmed { anchor, .. } = tx.chain_position else {
@@ -71,7 +72,7 @@ pub fn scan(cfg: &Config, wallet: &WalletConfig) -> Result<Vec<JournalEntry>> {
         })
         .collect();
 
-    entries.sort_by_key(|e| e.date);
+    entries.sort_by_key(|e| e.journal.date);
     tracing::info!("found {} confirmed transactions", entries.len());
     Ok(entries)
 }
@@ -83,7 +84,7 @@ fn build_entry(
     wallet: &Wallet,
     base: &Account,
     network: Network,
-) -> Option<JournalEntry> {
+) -> Option<FeedEntry> {
     let mut postings: Vec<Posting> = Vec::new();
 
     // Positive postings: outputs going to wallet addresses.
@@ -138,10 +139,10 @@ fn build_entry(
 
     postings.push(Posting::auto_balance(counterpart));
 
-    Some(JournalEntry {
+    Some(FeedEntry::onchain(txid, JournalEntry {
         date,
         description: description.to_string(),
-        tags: TagMap::new().add("txid", txid),
+        tags: TagMap::new(),
         postings,
-    })
+    }))
 }

@@ -10,7 +10,7 @@ use crate::money::Money;
 
 /// Tags whose values identify the same real-world transaction across wallets
 /// and sources; used for merging and journal dedup.
-pub const DEDUP_KEYS: &[&str] = &["txid", "payment_hash", "coinbase_id"];
+pub const DEDUP_KEYS: &[&str] = &["txid", "payment_hash"];
 
 /// An hledger account name; segments are joined with `:`.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]

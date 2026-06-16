@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use hledger_btc_core::journal::{Account, JournalEntry, Posting, PriceAnnotation, TagMap};
 use hledger_btc_core::money::Money;
-use hledger_btc_core::source::Source;
+use hledger_btc_core::source::{FeedEntry, Source};
 
 struct Credentials {
     name: String,
@@ -61,7 +61,7 @@ impl CoinbaseFeed {
             .context("failed to parse JSON response")
     }
 
-    fn fetch_orders(&self) -> Result<Vec<JournalEntry>> {
+    fn fetch_orders(&self) -> Result<Vec<FeedEntry>> {
         let account = self.account.as_str().to_string();
         let mut entries = Vec::new();
         let mut cursor: Option<String> = None;
@@ -100,7 +100,7 @@ impl CoinbaseFeed {
             .context("no BTC wallet account found on Coinbase")
     }
 
-    fn fetch_wallet_transactions(&self, account_id: &str) -> Result<Vec<JournalEntry>> {
+    fn fetch_wallet_transactions(&self, account_id: &str) -> Result<Vec<FeedEntry>> {
         let account = self.account.as_str().to_string();
         let mut entries = Vec::new();
         let base = format!("/v2/accounts/{account_id}/transactions");
@@ -138,11 +138,11 @@ impl Source for CoinbaseFeed {
         "coinbase"
     }
 
-    fn entries(&self) -> Result<Vec<JournalEntry>> {
+    fn entries(&self) -> Result<Vec<FeedEntry>> {
         let account_id = self.fetch_btc_account_id()?;
         let mut entries = self.fetch_orders()?;
         entries.extend(self.fetch_wallet_transactions(&account_id)?);
-        entries.sort_by_key(|e| e.date);
+        entries.sort_by_key(|e| e.journal.date);
         Ok(entries)
     }
 }
@@ -169,7 +169,7 @@ fn load_credentials(key_file: &Path) -> Result<Credentials> {
     })
 }
 
-fn order_to_entry(order: &Value, account: &str) -> Result<Option<JournalEntry>> {
+fn order_to_entry(order: &Value, account: &str) -> Result<Option<FeedEntry>> {
     let order_id = order["order_id"].as_str().context("missing order_id")?;
     let side = order["side"].as_str().context("missing side")?;
     let filled_size = order["filled_size"].as_str().context("missing filled_size")?;
@@ -197,19 +197,19 @@ fn order_to_entry(order: &Value, account: &str) -> Result<Option<JournalEntry>> 
     // computes it from the annotation + fee with no rounding drift.
     let price = Some(PriceAnnotation::Total(format!("{btc_cost}")));
 
-    Ok(Some(JournalEntry {
+    Ok(Some(FeedEntry::internal("coinbase_id", order_id.to_string(), JournalEntry {
         date,
         description: description.to_string(),
-        tags: TagMap::new().add("coinbase_id", order_id),
+        tags: TagMap::new(),
         postings: vec![
             Posting::with_amount(format!("{}:btc", account), btc_amount).with_price(price),
             Posting::with_money("expenses:fees:coinbase", fee),
             Posting::auto_balance(format!("{}:usd", account)),
         ],
-    }))
+    })))
 }
 
-fn wallet_tx_to_entry(tx: &Value, account: &str) -> Result<Option<JournalEntry>> {
+fn wallet_tx_to_entry(tx: &Value, account: &str) -> Result<Option<FeedEntry>> {
     let tx_type = tx["type"].as_str().unwrap_or("");
     let status = tx["status"].as_str().unwrap_or("");
     let currency = tx["amount"]["currency"].as_str().unwrap_or("");
@@ -235,38 +235,50 @@ fn wallet_tx_to_entry(tx: &Value, account: &str) -> Result<Option<JournalEntry>>
         .to_string();
     let balance_account = if amount_sat < 0 { "expenses:unknown" } else { "income:unknown" };
 
-    let mut tags = TagMap::new().add("coinbase_id", id);
-    if let Some(hash) = txid {
-        tags = tags.add("txid", hash);
+    let postings = vec![
+        Posting::with_amount(btc_account, amount_sat),
+        Posting::auto_balance(balance_account),
+    ];
+
+    if is_lightning && tx_type == "send" {
+        // Extract payment_hash from the BOLT11 invoice so this entry can be
+        // reconciled against Phoenix (which stamps payment_hash on received payments).
+        if let Some(invoice) = tx["to"]["address"].as_str() {
+            if let Some(hash) = bolt11_payment_hash(invoice) {
+                let mut journal = JournalEntry { date, description, tags: TagMap::new(), postings };
+                journal.tags.push("coinbase_id", id);
+                return Ok(Some(FeedEntry::lightning(hash, journal)));
+            }
+            tracing::warn!("could not decode payment_hash from BOLT11 invoice for coinbase_id:{id}");
+        }
+        // Fall through to internal if invoice missing or undecodable.
+        return Ok(Some(FeedEntry::internal("coinbase_id", id.to_string(), JournalEntry {
+            date, description, tags: TagMap::new(), postings,
+        })));
     }
 
     if is_lightning {
-        if tx_type == "send" {
-            // Extract payment_hash from the BOLT11 invoice so this entry can be
-            // reconciled against Phoenix (which stamps payment_hash on received payments).
-            if let Some(invoice) = tx["to"]["address"].as_str() {
-                match bolt11_payment_hash(invoice) {
-                    Some(hash) => { tags = tags.add("payment_hash", hash); }
-                    None => tracing::warn!("could not decode payment_hash from BOLT11 invoice for coinbase_id:{id}"),
-                }
-            }
-        } else {
-            // Coinbase Lightning receives expose no payment hash — the API returns
-            // only `network: { status }` with no invoice or hash field. These entries
-            // carry only coinbase_id and cannot be reconciled against Phoenix.
-            tracing::debug!("coinbase_id:{id} is a Lightning receive; no payment_hash available for reconcile");
-        }
+        // Coinbase Lightning receives expose no payment hash — the API returns
+        // only `network: { status }` with no invoice or hash field. These entries
+        // carry only coinbase_id and cannot be reconciled against Phoenix.
+        tracing::debug!("coinbase_id:{id} is a Lightning receive; no payment_hash available for reconcile");
+        return Ok(Some(FeedEntry::internal("coinbase_id", id.to_string(), JournalEntry {
+            date, description, tags: TagMap::new(), postings,
+        })));
     }
 
-    Ok(Some(JournalEntry {
-        date,
-        description,
-        tags,
-        postings: vec![
-            Posting::with_amount(btc_account, amount_sat),
-            Posting::auto_balance(balance_account),
-        ],
-    }))
+    if let Some(hash) = txid {
+        // On-chain: use txid for cross-source reconciliation; stamp coinbase_id
+        // as an informational tag for journal reference.
+        let mut journal = JournalEntry { date, description, tags: TagMap::new(), postings };
+        journal.tags.push("coinbase_id", id);
+        return Ok(Some(FeedEntry::onchain(hash.to_string(), journal)));
+    }
+
+    // No txid and not lightning — use internal dedup.
+    Ok(Some(FeedEntry::internal("coinbase_id", id.to_string(), JournalEntry {
+        date, description, tags: TagMap::new(), postings,
+    })))
 }
 
 /// Extracts the payment hash from a BOLT11 invoice by decoding the bech32 data
