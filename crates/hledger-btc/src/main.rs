@@ -191,6 +191,16 @@ enum FeedProvider {
         #[arg(long)]
         name: Option<String>,
     },
+    #[cfg(feature = "river")]
+    /// Import from River Account Activity CSV export
+    River {
+        /// Path to River Account Activity CSV export
+        #[arg(long)]
+        path: PathBuf,
+        /// Account sub-segment for journal postings (default: "river")
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -371,6 +381,11 @@ fn main() -> Result<()> {
                         FeedProvider::Cashapp { path, name } => {
                             let account = base.append(name.as_deref().unwrap_or("cashapp"));
                             Box::new(hledger_btc_cashapp::CashAppFeed::new(path, account))
+                        }
+                        #[cfg(feature = "river")]
+                        FeedProvider::River { path, name } => {
+                            let account = base.append(name.as_deref().unwrap_or("river"));
+                            Box::new(hledger_btc_river::RiverFeed::new(path, account))
                         }
                         #[cfg(feature = "coinbase")]
                         FeedProvider::Coinbase { key_file, name } => match key_file {

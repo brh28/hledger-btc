@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/hledger-btc-core", "crates/hledger-btc-phoenix", "crates/hledger-btc-coinbase", "crates/hledger-btc-cashapp", "crates/hledger-btc"]
+members = ["crates/hledger-btc-core", "crates/hledger-btc-phoenix", "crates/hledger-btc-coinbase", "crates/hledger-btc-cashapp", "crates/hledger-btc-river", "crates/hledger-btc"]
 resolver = "2"
 
 [workspace.dependencies]

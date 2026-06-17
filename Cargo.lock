@@ -785,6 +785,7 @@ dependencies = [
  "hledger-btc-coinbase",
  "hledger-btc-core",
  "hledger-btc-phoenix",
+ "hledger-btc-river",
  "serde",
  "toml",
  "tracing",
@@ -843,6 +844,19 @@ dependencies = [
 
 [[package]]
 name = "hledger-btc-phoenix"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "csv",
+ "hledger-btc-core",
+ "serde",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "hledger-btc-river"
 version = "0.1.0"
 dependencies = [
  "anyhow",

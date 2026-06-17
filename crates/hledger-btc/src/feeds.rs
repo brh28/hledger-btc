@@ -27,6 +27,8 @@ pub fn build_feed(cfg: &Config, entry: &FeedConfig) -> Result<Box<dyn Source + '
         "coinbase" => hledger_btc_coinbase::build(&entry.config, entry.account_name(&cfg.base_account)),
         #[cfg(feature = "cashapp")]
         "cashapp" => hledger_btc_cashapp::build(&entry.config, entry.account_name(&cfg.base_account)),
+        #[cfg(feature = "river")]
+        "river" => hledger_btc_river::build(&entry.config, entry.account_name(&cfg.base_account)),
         other => anyhow::bail!("unknown feed provider '{other}'"),
     }
 }
