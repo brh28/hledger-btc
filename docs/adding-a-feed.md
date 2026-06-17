@@ -81,6 +81,19 @@ fn row_to_entry(row: &Row, account: &str) -> Result<Option<FeedEntry>> {
 
 Use `FeedEntry::onchain` for withdrawals/deposits, `FeedEntry::lightning` for Lightning, and `FeedEntry::internal` only for trades (exchange-internal, no on-chain footprint). Using `internal` for withdrawals or deposits silently breaks reconciliation against wallet scans.
 
+If the provider does not expose a txid or payment_hash, use `FeedEntry::internal` with a synthetic key — see [Creating a synthetic key](#creating-a-synthetic-key).
+
+**Parsing USD amounts** — exchange CSVs commonly format amounts as `-$1,234.56`. Strip `$` and `,` before parsing, and handle the empty-string case:
+```rust
+fn parse_usd(s: &str) -> Result<f64> {
+    let s = s.replace(',', "").replace('$', "");
+    if s.is_empty() { return Ok(0.0); }
+    s.parse::<f64>().with_context(|| format!("invalid USD amount: '{s}'"))
+}
+```
+
+**Status filtering** — always check a status field before emitting an entry. Status string values are provider-specific (`"Completed"`, `"COMPLETE"`, etc.) — verify against real export data before writing the check.
+
 To attach a provider ID as an informational tag on an on-chain entry:
 ```rust
 let mut journal = JournalEntry { ... };
@@ -198,4 +211,42 @@ Cover each row type, verify `EntryKind` and ID, confirm unknown types return `Ok
 cargo build --features <name>
 cargo test -p hledger-btc-<name>
 cargo run --features <name> -- import feed <name> --path export.csv
+```
+
+## Creating a synthetic key
+
+Some providers do not consistently populate a transaction ID. When an ID is absent, derive a stable key from other fields:
+
+```rust
+fn dedup_id(row: &Row) -> String {
+    let id = row.transaction_id.trim();
+    if !id.is_empty() {
+        return id.to_string();
+    }
+    let clean = |s: &str| s.replace([' ', ',', '$'], "");
+    format!("{}|{}|{}|{}",
+        clean(&row.date),
+        clean(&row.transaction_type),
+        clean(&row.amount),
+        clean(&row.asset_amount),
+    )
+}
+```
+
+**The ID must not contain spaces or commas.** The journal tag parser (`extract_all` in `source.rs`) splits tag values at those characters, so a key like `"2025-06-20 15:11:20 CDT|Bitcoin Buy|..."` would be truncated to `"2025-06-20"` when read back — causing every transaction on the same day to appear already-recorded on the next import.
+
+Include the full datetime (not just the date) and enough fields to uniquely identify the row across transactions of the same type on the same day.
+
+Write a test that pins the exact key string so regressions are caught immediately:
+
+```rust
+#[test]
+fn synthesizes_dedup_id_when_no_transaction_id() {
+    let entries = parse(csv(&["2025-06-20 15:11:20 CDT,,Bitcoin Buy,..."]).as_bytes(), ACCOUNT).unwrap();
+    let id = match &entries[0].kind {
+        EntryKind::Internal { id, .. } => id.clone(),
+        _ => panic!("expected internal"),
+    };
+    assert_eq!(id, "2025-06-2015:11:20CDT|BitcoinBuy|-0.75|0.00000718");
+}
 ```
