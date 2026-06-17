@@ -6,11 +6,13 @@ edition = "2024"
 [features]
 phoenix = ["dep:hledger-btc-phoenix"]
 coinbase = ["dep:hledger-btc-coinbase"]
+cashapp = ["dep:hledger-btc-cashapp"]
 
 [dependencies]
 hledger-btc-core = { path = "../hledger-btc-core" }
 hledger-btc-phoenix = { path = "../hledger-btc-phoenix", optional = true }
 hledger-btc-coinbase = { path = "../hledger-btc-coinbase", optional = true }
+hledger-btc-cashapp = { path = "../hledger-btc-cashapp", optional = true }
 serde.workspace = true
 clap.workspace = true
 anyhow.workspace = true

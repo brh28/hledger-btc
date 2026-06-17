@@ -21,6 +21,7 @@ flowchart LR
     subgraph feeds["Third-party feeds"]
         PH[Phoenix]
         CB[Coinbase]
+        CA[CashApp]
         ET[...]
     end
 
@@ -150,10 +151,11 @@ Entries from different feeds that share a `txid` or `payment_hash` — for examp
 
 Supported providers:
 
-| Provider | Format | Account |
-|---|---|---|
-| `phoenix` | Phoenix wallet CSV export | `<base_account>:<name>` |
-| `coinbase` | Coinbase API | `<base_account>:<name>` |
+| Provider | Format | Account | Notes |
+|---|---|---|---|
+| `phoenix` | Phoenix wallet CSV export | `<base_account>:<name>` | |
+| `coinbase` | Coinbase API | `<base_account>:<name>` | |
+| `cashapp` | Cash App CSV export | `<base_account>:<name>:btc`, `<base_account>:<name>:usd` | Reconciliation not supported — Cash App export does not include txid or payment_hash |
 
 ## Design
 
@@ -189,7 +191,7 @@ Everything else — the description, posting free-text, and any user-defined tag
 When two sources each see one side of the same transaction — for example,
 Electrum recording an outgoing spend and Phoenix recording a swap-in with the
 same `txid` — entries are merged into a single journal entry. Entries sharing a
-`txid`, `payment_hash`, or `coinbase_id` across `scan` and `import feed` runs
+`txid`, `payment_hash`, or provider-specific id (e.g. `coinbase_id`) across `scan` and `import feed` runs
 are merged, with their postings combined and tags unioned.
 
 ### BIP329

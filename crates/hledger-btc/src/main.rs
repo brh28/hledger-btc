@@ -181,6 +181,16 @@ enum FeedProvider {
         #[arg(long)]
         name: Option<String>,
     },
+    #[cfg(feature = "cashapp")]
+    /// Import from Cash App CSV export
+    Cashapp {
+        /// Path to Cash App CSV export
+        #[arg(long)]
+        path: PathBuf,
+        /// Account sub-segment for journal postings (default: "cashapp")
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -356,6 +366,11 @@ fn main() -> Result<()> {
                         FeedProvider::Phoenix { path, name } => {
                             let account = base.append(name.as_deref().unwrap_or("phoenix"));
                             Box::new(hledger_btc_phoenix::PhoenixFeed::new(path, account))
+                        }
+                        #[cfg(feature = "cashapp")]
+                        FeedProvider::Cashapp { path, name } => {
+                            let account = base.append(name.as_deref().unwrap_or("cashapp"));
+                            Box::new(hledger_btc_cashapp::CashAppFeed::new(path, account))
                         }
                         #[cfg(feature = "coinbase")]
                         FeedProvider::Coinbase { key_file, name } => match key_file {

@@ -781,6 +781,7 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "hledger-btc-cashapp",
  "hledger-btc-coinbase",
  "hledger-btc-core",
  "hledger-btc-phoenix",
@@ -788,6 +789,19 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "hledger-btc-cashapp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "csv",
+ "hledger-btc-core",
+ "serde",
+ "toml",
+ "tracing",
 ]
 
 [[package]]
