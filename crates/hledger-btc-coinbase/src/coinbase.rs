@@ -234,11 +234,18 @@ fn wallet_tx_to_entry(tx: &Value, account: &str) -> Result<Option<FeedEntry>> {
         .unwrap_or(if tx_type == "send" { "Coinbase Send" } else { "Coinbase Receive" })
         .to_string();
     let balance_account = if amount_sat < 0 { "expenses:unknown" } else { "income:unknown" };
-
-    let postings = vec![
-        Posting::with_amount(btc_account, amount_sat),
-        Posting::auto_balance(balance_account),
-    ];
+    let fee_sat = if tx_type == "send" && !is_lightning {
+        tx["network"]["transaction_fee"]["amount"].as_str()
+            .and_then(|s| btc_to_sat(s).ok())
+            .filter(|&f| f > 0)
+    } else {
+        None
+    };
+    let mut postings = vec![Posting::with_amount(btc_account, amount_sat)];
+    if let Some(fee) = fee_sat {
+        postings.push(Posting::with_amount("expenses:fees:onchain", fee));
+    }
+    postings.push(Posting::auto_balance(balance_account));
 
     if is_lightning && tx_type == "send" {
         // Extract payment_hash from the BOLT11 invoice so this entry can be
@@ -272,6 +279,11 @@ fn wallet_tx_to_entry(tx: &Value, account: &str) -> Result<Option<FeedEntry>> {
         // as an informational tag for journal reference.
         let mut journal = JournalEntry { date, description, tags: TagMap::new(), postings };
         journal.tags.push("coinbase_id", id);
+        if tx_type == "send" {
+            if let Some(addr) = tx["to"]["address"].as_str().filter(|s| !s.is_empty()) {
+                journal.tags.push("address", addr);
+            }
+        }
         return Ok(Some(FeedEntry::onchain(hash.to_string(), journal)));
     }
 
@@ -361,6 +373,79 @@ mod tests {
     fn bolt11_payment_hash_invalid_returns_none() {
         assert!(bolt11_payment_hash("not_an_invoice").is_none());
         assert!(bolt11_payment_hash("").is_none());
+    }
+
+    fn make_tx(tx_type: &str, address: &str, amount: &str, network_hash: &str) -> serde_json::Value {
+        make_tx_with_fee(tx_type, address, amount, network_hash, None)
+    }
+
+    fn make_tx_with_fee(tx_type: &str, address: &str, amount: &str, network_hash: &str, fee: Option<&str>) -> serde_json::Value {
+        let fee_obj = match fee {
+            Some(f) => serde_json::json!({ "amount": f, "currency": "BTC" }),
+            None => serde_json::Value::Null,
+        };
+        serde_json::json!({
+            "type": tx_type,
+            "status": "completed",
+            "amount": { "amount": amount, "currency": "BTC" },
+            "created_at": "2024-01-15T12:00:00Z",
+            "id": "tx-test-id",
+            "description": "",
+            "to": { "address": address },
+            "network": { "hash": network_hash, "network_name": "bitcoin", "transaction_fee": fee_obj }
+        })
+    }
+
+    #[test]
+    fn onchain_send_includes_fee_posting_when_present() {
+        let addr = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
+        let tx = make_tx_with_fee("send", addr, "-0.001", "abcd1234", Some("0.000005"));
+        let entry = wallet_tx_to_entry(&tx, "assets:coinbase").unwrap().unwrap();
+        let fee = entry.journal.postings.iter()
+            .find(|p| p.account == "expenses:fees:onchain")
+            .expect("fee posting should be present");
+        assert_eq!(fee.amount.as_ref().unwrap().amount, bigdecimal::BigDecimal::from(500));
+    }
+
+    #[test]
+    fn onchain_send_no_fee_when_absent() {
+        let addr = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
+        let tx = make_tx("send", addr, "-0.001", "abcd1234");
+        let entry = wallet_tx_to_entry(&tx, "assets:coinbase").unwrap().unwrap();
+        assert!(entry.journal.postings.iter().all(|p| p.account != "expenses:fees:onchain"));
+    }
+
+    #[test]
+    fn onchain_send_tags_entry_with_destination_address() {
+        let addr = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
+        let tx = make_tx("send", addr, "-0.001", "abcd1234");
+        let entry = wallet_tx_to_entry(&tx, "assets:coinbase").unwrap().unwrap();
+        assert_eq!(entry.journal.tags.get("address"), Some(addr));
+        let balance = entry.journal.postings.iter().find(|p| p.amount.is_none()).unwrap();
+        assert!(balance.tags.get("address").is_none(), "address should be on entry header, not posting");
+    }
+
+    #[test]
+    fn onchain_receive_does_not_tag_entry_with_address() {
+        let tx = make_tx("receive", "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", "0.001", "abcd1234");
+        let entry = wallet_tx_to_entry(&tx, "assets:coinbase").unwrap().unwrap();
+        assert!(entry.journal.tags.get("address").is_none());
+    }
+
+    #[test]
+    fn lightning_send_does_not_tag_entry_with_invoice_as_address() {
+        let tx = serde_json::json!({
+            "type": "send",
+            "status": "completed",
+            "amount": { "amount": "-0.001", "currency": "BTC" },
+            "created_at": "2024-01-15T12:00:00Z",
+            "id": "tx-ln-id",
+            "description": "",
+            "to": { "address": SAMPLE_INVOICE },
+            "network": { "hash": "", "network_name": "lightning" }
+        });
+        let entry = wallet_tx_to_entry(&tx, "assets:coinbase").unwrap().unwrap();
+        assert!(entry.journal.tags.get("address").is_none(), "lightning send should not carry BOLT11 as address tag");
     }
 }
 

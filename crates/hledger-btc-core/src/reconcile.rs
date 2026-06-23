@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::journal::{Posting, PriceAnnotation, DEDUP_KEYS};
+use crate::journal::{format_posting, Posting, DEDUP_KEYS};
 use crate::source::Notice;
 use crate::text::{append_tag_if_absent, extract_tag};
 
@@ -71,7 +71,10 @@ fn process_block(lines: &[&str], notices: &[Notice]) -> (String, Option<Notice>,
         return (lines.join("\n"), None, Some(notice.clone()));
     };
 
-    let placeholder_account = lines[unknown_idx].trim();
+    let placeholder_account = {
+        let t = lines[unknown_idx].trim();
+        t.split("  ;").next().unwrap_or(t).trim_end()
+    };
 
     // Collect the accounts already explicitly present in this block.
     let existing_accounts: HashSet<&str> = lines.iter().skip(1)
@@ -141,26 +144,12 @@ fn find_matching_notice(header: &str, notices: &[Notice]) -> Option<Notice> {
 fn is_unknown_leg(line: &str) -> bool {
     if !line.starts_with(' ') && !line.starts_with('\t') { return false; }
     let t = line.trim();
-    t == "income:unknown" || t == "expenses:unknown"
+    // Match the bare account name or the account followed by a tag comment
+    // (e.g. `expenses:unknown  ; address:bc1q...`).
+    let account = t.split("  ;").next().unwrap_or(t).trim_end();
+    account == "income:unknown" || account == "expenses:unknown"
 }
 
-fn format_posting(p: &Posting) -> String {
-    match &p.amount {
-        Some(money) => {
-            let price_str = match &p.price {
-                Some(PriceAnnotation::Unit(pr)) => format!(" @ {pr}"),
-                Some(PriceAnnotation::Total(pr)) => format!(" @@ {pr}"),
-                None => String::new(),
-            };
-            if p.tags.is_empty() {
-                format!("    {}    {}{}", p.account, money, price_str)
-            } else {
-                format!("    {}    {}{}  ; {}", p.account, money, price_str, p.tags)
-            }
-        }
-        None => format!("    {}", p.account),
-    }
-}
 
 #[cfg(test)]
 mod tests {

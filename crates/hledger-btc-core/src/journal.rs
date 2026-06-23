@@ -217,6 +217,30 @@ fn merge_group(entries: Vec<JournalEntry>) -> JournalEntry {
     JournalEntry { date, description, tags, postings }
 }
 
+pub fn format_posting(p: &Posting) -> String {
+    match &p.amount {
+        Some(money) => {
+            let price = match &p.price {
+                Some(PriceAnnotation::Unit(pr)) => format!(" @ {pr}"),
+                Some(PriceAnnotation::Total(pr)) => format!(" @@ {pr}"),
+                None => String::new(),
+            };
+            if p.tags.is_empty() {
+                format!("    {}    {}{}", p.account, money, price)
+            } else {
+                format!("    {}    {}{}  ; {}", p.account, money, price, p.tags)
+            }
+        }
+        None => {
+            if p.tags.is_empty() {
+                format!("    {}", p.account)
+            } else {
+                format!("    {}  ; {}", p.account, p.tags)
+            }
+        }
+    }
+}
+
 pub fn write_entries(entries: &[JournalEntry], writer: &mut dyn Write) -> Result<()> {
     for entry in entries {
         write_entry(entry, writer)?;
@@ -231,25 +255,9 @@ fn write_entry(entry: &JournalEntry, w: &mut dyn Write) -> Result<()> {
         write!(w, "  ; {}", entry.tags)?;
     }
     writeln!(w)?;
-
     for posting in &entry.postings {
-        match &posting.amount {
-            Some(money) => {
-                let price = match &posting.price {
-                    Some(PriceAnnotation::Unit(p)) => format!(" @ {p}"),
-                    Some(PriceAnnotation::Total(c)) => format!(" @@ {c}"),
-                    None => String::new(),
-                };
-                if posting.tags.is_empty() {
-                    writeln!(w, "    {}    {}{}", posting.account, money, price)?;
-                } else {
-                    writeln!(w, "    {}    {}{}  ; {}", posting.account, money, price, posting.tags)?;
-                }
-            }
-            None => writeln!(w, "    {}", posting.account)?,
-        }
+        writeln!(w, "{}", format_posting(posting))?;
     }
-
     writeln!(w)?;
     Ok(())
 }
