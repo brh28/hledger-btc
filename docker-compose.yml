@@ -1,0 +1,32 @@
+services:
+  bitcoind:
+    build:
+      context: .
+      dockerfile: Dockerfile.knots
+    command:
+      - -regtest
+      - -server
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=0.0.0.0/0
+      - -rpcuser=test
+      - -rpcpassword=test
+      - -fallbackfee=0.0001
+      - -txindex=1
+      - -listenonion=0
+    ports:
+      - "18443:18443"
+      - "18444:18444"
+
+  electrs:
+    image: ghcr.io/vulpemventures/electrs:latest
+    depends_on:
+      - bitcoind
+    command:
+      - --network=regtest
+      - --daemon-rpc-addr=bitcoind:18443
+      - --cookie=test:test
+      - --electrum-rpc-addr=0.0.0.0:60401
+      - --http-addr=0.0.0.0:3000
+      - --jsonrpc-import
+    ports:
+      - "60401:60401"

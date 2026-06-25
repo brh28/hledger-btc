@@ -1,0 +1,47 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-integration-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-integration-
+
+      - name: Build Docker images
+        run: docker compose build
+
+      - name: Start services
+        run: docker compose up -d
+
+      - name: Wait for electrs
+        run: |
+          echo "Waiting for electrs on :60401..."
+          timeout 120 bash -c 'until bash -c "echo > /dev/tcp/127.0.0.1/60401" 2>/dev/null; do sleep 2; done'
+
+      - name: Run integration tests
+        env:
+          RUST_LOG: warn
+        run: cargo test -p hledger-btc-core --features integration --test integration -- --test-threads=1
+
+      - name: Stop services
+        if: always()
+        run: docker compose down

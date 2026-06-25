@@ -1,0 +1,12 @@
+FROM debian:bookworm-slim
+ARG KNOTS_VERSION=29.3.knots20260508
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL \
+    "https://github.com/bitcoinknots/bitcoin/releases/download/v${KNOTS_VERSION}/bitcoin-${KNOTS_VERSION}-x86_64-linux-gnu.tar.gz" \
+    -o /tmp/knots.tar.gz \
+    && tar -xzf /tmp/knots.tar.gz -C /tmp \
+    && install -m 755 "/tmp/bitcoin-${KNOTS_VERSION}/bin/bitcoind" /usr/local/bin/bitcoind \
+    && rm -rf /tmp/knots.tar.gz "/tmp/bitcoin-${KNOTS_VERSION}"
+EXPOSE 18443 18444
+ENTRYPOINT ["bitcoind"]
