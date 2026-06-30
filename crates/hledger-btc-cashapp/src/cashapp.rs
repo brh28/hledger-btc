@@ -73,6 +73,7 @@ fn buy_entry(row: &Row, date: NaiveDate, account: &str) -> Result<FeedEntry> {
             Posting::with_money("expenses:fees:cashapp", Money::parse(&format!("{fee_usd:.2}"), "USD")?),
             Posting::auto_balance(format!("{account}:usd")),
         ],
+        status: Some(true),
     }))
 }
 
@@ -94,6 +95,7 @@ fn sell_entry(row: &Row, date: NaiveDate, account: &str) -> Result<FeedEntry> {
             Posting::with_money("expenses:fees:cashapp", Money::parse(&format!("{fee_usd:.2}"), "USD")?),
             Posting::auto_balance(format!("{account}:usd")),
         ],
+        status: Some(true),
     }))
 }
 
@@ -107,6 +109,7 @@ fn deposit_entry(row: &Row, date: NaiveDate, account: &str) -> Result<FeedEntry>
             Posting::with_amount(format!("{account}:btc"), sat),
             Posting::auto_balance("income:unknown"),
         ],
+        status: Some(true),
     }))
 }
 
@@ -128,6 +131,7 @@ fn withdrawal_entry(row: &Row, date: NaiveDate, account: &str) -> Result<FeedEnt
         description: "Bitcoin Withdrawal".to_string(),
         tags: TagMap::new(),
         postings,
+        status: Some(true),
     }))
 }
 

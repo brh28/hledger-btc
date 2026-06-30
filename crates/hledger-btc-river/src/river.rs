@@ -100,6 +100,7 @@ fn buy_entry(row: &Row, date: NaiveDate, account: &str, id: &str, desc: &str) ->
         description: desc.to_string(),
         tags: TagMap::new(),
         postings,
+        status: Some(true),
     }))
 }
 
@@ -121,6 +122,7 @@ fn sell_entry(row: &Row, date: NaiveDate, account: &str, id: &str, desc: &str) -
         description: desc.to_string(),
         tags: TagMap::new(),
         postings,
+        status: Some(true),
     }))
 }
 
@@ -134,6 +136,7 @@ fn interest_entry(row: &Row, date: NaiveDate, account: &str, id: &str, desc: &st
             Posting::with_amount(format!("{account}:btc"), sat),
             Posting::auto_balance("income:interest:river"),
         ],
+        status: Some(true),
     }))
 }
 
@@ -149,7 +152,7 @@ fn lightning_entry(row: &Row, date: NaiveDate, account: &str, id: &str, desc: &s
         }
         postings.push(Posting::auto_balance("expenses:unknown"));
         Ok(Some(FeedEntry::provider("river_id", id.to_string(), JournalEntry {
-            date, description: desc.to_string(), tags: TagMap::new(), postings,
+            date, description: desc.to_string(), tags: TagMap::new(), postings, status: Some(true),
         })))
     } else {
         let sat = btc_to_sat(row.received_amount.trim())?;
@@ -161,6 +164,7 @@ fn lightning_entry(row: &Row, date: NaiveDate, account: &str, id: &str, desc: &s
                 Posting::with_amount(format!("{account}:btc"), sat),
                 Posting::auto_balance("income:unknown"),
             ],
+            status: Some(true),
         })))
     }
 }
@@ -177,7 +181,7 @@ fn onchain_entry(row: &Row, date: NaiveDate, account: &str, id: &str, desc: &str
         }
         postings.push(Posting::auto_balance("expenses:unknown"));
         Ok(Some(FeedEntry::provider("river_id", id.to_string(), JournalEntry {
-            date, description: desc.to_string(), tags: TagMap::new(), postings,
+            date, description: desc.to_string(), tags: TagMap::new(), postings, status: Some(true),
         })))
     } else {
         let sat = btc_to_sat(row.received_amount.trim())?;
@@ -189,6 +193,7 @@ fn onchain_entry(row: &Row, date: NaiveDate, account: &str, id: &str, desc: &str
                 Posting::with_amount(format!("{account}:btc"), sat),
                 Posting::auto_balance("income:unknown"),
             ],
+            status: Some(true),
         })))
     }
 }

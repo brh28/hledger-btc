@@ -82,9 +82,17 @@ enum Command {
         #[arg(long)]
         description: Option<String>,
 
-        /// Expected amount in satoshis (default: 0)
+        /// Expected amount in satoshis; stored as expected: tag, not as a posting amount
         #[arg(long)]
         amount: Option<i64>,
+
+        /// Credit account for the counterpart leg (default: income:unknown)
+        #[arg(long)]
+        credit: Option<String>,
+
+        /// Extra tags to carry forward to the matching scan entry, e.g. payee:Alice (repeatable)
+        #[arg(long = "tag", value_name = "KEY:VALUE", action = clap::ArgAction::Append)]
+        tags: Option<Vec<String>>,
 
         /// Per-unit price annotation, e.g. "USD 0.00045" (mutually exclusive with --total-cost)
         #[arg(long, conflicts_with = "total_cost")]
@@ -409,7 +417,7 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Command::Receive { journal, address, account, date, description, amount, unit_price, total_cost } => {
+        Command::Receive { journal, address, account, date, description, amount, credit, tags, unit_price, total_cost } => {
             let resolved_account = account.or_else(|| {
                 config::load(&config_path).ok().map(|c| c.base_account.to_string())
             });
@@ -420,12 +428,22 @@ fn main() -> Result<()> {
                 _ => None,
             };
 
+            let extra_tags: Vec<(String, String)> = tags.unwrap_or_default()
+                .into_iter()
+                .filter_map(|s| {
+                    let (k, v) = s.split_once(':')?;
+                    Some((k.to_string(), v.to_string()))
+                })
+                .collect();
+
             let entry = receive::receive(receive::ReceiveParams {
                 address,
                 account: resolved_account,
                 date: date.unwrap_or_else(|| chrono::Local::now().date_naive()),
                 description: description.unwrap_or_else(|| "Awaiting Payment".to_string()),
-                amount_sat: amount.unwrap_or(0),
+                expected_sat: amount,
+                credit_account: credit,
+                extra_tags,
                 price,
             });
 

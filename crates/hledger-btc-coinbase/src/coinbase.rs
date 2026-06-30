@@ -206,6 +206,7 @@ fn order_to_entry(order: &Value, account: &str) -> Result<Option<FeedEntry>> {
             Posting::with_money("expenses:fees:coinbase", fee),
             Posting::auto_balance(format!("{}:usd", account)),
         ],
+        status: Some(true),
     })))
 }
 
@@ -252,7 +253,7 @@ fn wallet_tx_to_entry(tx: &Value, account: &str) -> Result<Option<FeedEntry>> {
         // reconciled against Phoenix (which stamps payment_hash on received payments).
         if let Some(invoice) = tx["to"]["address"].as_str() {
             if let Some(hash) = bolt11_payment_hash(invoice) {
-                let mut journal = JournalEntry { date, description, tags: TagMap::new(), postings };
+                let mut journal = JournalEntry { date, description, tags: TagMap::new(), postings, status: Some(true) };
                 journal.tags.push("coinbase_id", id);
                 return Ok(Some(FeedEntry::lightning(hash, journal)));
             }
@@ -260,7 +261,7 @@ fn wallet_tx_to_entry(tx: &Value, account: &str) -> Result<Option<FeedEntry>> {
         }
         // Fall through to internal if invoice missing or undecodable.
         return Ok(Some(FeedEntry::provider("coinbase_id", id.to_string(), JournalEntry {
-            date, description, tags: TagMap::new(), postings,
+            date, description, tags: TagMap::new(), postings, status: Some(true),
         })));
     }
 
@@ -270,14 +271,14 @@ fn wallet_tx_to_entry(tx: &Value, account: &str) -> Result<Option<FeedEntry>> {
         // carry only coinbase_id and cannot be reconciled against Phoenix.
         tracing::debug!("coinbase_id:{id} is a Lightning receive; no payment_hash available for reconcile");
         return Ok(Some(FeedEntry::provider("coinbase_id", id.to_string(), JournalEntry {
-            date, description, tags: TagMap::new(), postings,
+            date, description, tags: TagMap::new(), postings, status: Some(true),
         })));
     }
 
     if let Some(hash) = txid {
         // On-chain: use txid for cross-source reconciliation; stamp coinbase_id
         // as an informational tag for journal reference.
-        let mut journal = JournalEntry { date, description, tags: TagMap::new(), postings };
+        let mut journal = JournalEntry { date, description, tags: TagMap::new(), postings, status: Some(true) };
         journal.tags.push("coinbase_id", id);
         if tx_type == "send" {
             if let Some(addr) = tx["to"]["address"].as_str().filter(|s| !s.is_empty()) {
@@ -289,7 +290,7 @@ fn wallet_tx_to_entry(tx: &Value, account: &str) -> Result<Option<FeedEntry>> {
 
     // No txid and not lightning — use internal dedup.
     Ok(Some(FeedEntry::provider("coinbase_id", id.to_string(), JournalEntry {
-        date, description, tags: TagMap::new(), postings,
+        date, description, tags: TagMap::new(), postings, status: Some(true),
     })))
 }
 

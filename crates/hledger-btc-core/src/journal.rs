@@ -123,6 +123,8 @@ pub struct JournalEntry {
     pub description: String,
     pub tags: TagMap,
     pub postings: Vec<Posting>,
+    /// `None` = unmarked, `Some(false)` = pending (`!`), `Some(true)` = cleared (`*`).
+    pub status: Option<bool>,
 }
 
 /// Sums the amounts of all explicit postings with the given commodity.
@@ -214,7 +216,7 @@ fn merge_group(entries: Vec<JournalEntry>) -> JournalEntry {
         postings.push(Posting::auto_balance(if sat_sum.is_negative() { "expenses:unknown" } else { "income:unknown" }));
     }
 
-    JournalEntry { date, description, tags, postings }
+    JournalEntry { date, description, tags, postings, status: Some(true) }
 }
 
 pub fn format_posting(p: &Posting) -> String {
@@ -250,7 +252,11 @@ pub fn write_entries(entries: &[JournalEntry], writer: &mut dyn Write) -> Result
 
 fn write_entry(entry: &JournalEntry, w: &mut dyn Write) -> Result<()> {
     let description = entry.description.replace(['\n', '\r'], " ");
-    write!(w, "{} * {}", entry.date, description)?;
+    match entry.status {
+        None          => write!(w, "{} {}", entry.date, description)?,
+        Some(false)   => write!(w, "{} ! {}", entry.date, description)?,
+        Some(true)    => write!(w, "{} * {}", entry.date, description)?,
+    }
     if !entry.tags.is_empty() {
         write!(w, "  ; {}", entry.tags)?;
     }
@@ -272,6 +278,7 @@ mod tests {
             description: desc.to_string(),
             tags,
             postings,
+            status: Some(true),
         }
     }
 

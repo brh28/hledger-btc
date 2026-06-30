@@ -187,6 +187,7 @@ mod tests {
                 Posting::with_amount("expenses:fees:onchain", 500),
                 Posting::with_amount("assets:bitcoin:lightning:phoenix", 99_500),
             ],
+            status: Some(true),
         };
         make_notice("txid", TXID, &["phoenix"], &["electrum"], entry)
     }
@@ -271,6 +272,7 @@ mod tests {
                 Posting::with_amount("assets:bitcoin:wallet:addr1", 50_000),
                 Posting::with_amount("assets:coinbase", -50_000),
             ],
+            status: Some(true),
         };
         let notice = make_notice("txid", TXID, &["coinbase"], &["electrum"], incoming);
         let (out, result) = reconcile(&journal, &[notice]);
@@ -329,6 +331,7 @@ mod tests {
                 Posting::with_amount("assets:coinbase:btc", -100_000),
                 Posting::auto_balance("expenses:unknown"),
             ],
+            status: Some(true),
         };
         let notice = make_notice("txid", TXID, &["coinbase"], &["electrum"], incoming);
         let (out, result) = reconcile(&journal, &[notice]);

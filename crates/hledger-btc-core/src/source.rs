@@ -246,6 +246,7 @@ mod tests {
             description: "Test".to_string(),
             tags,
             postings: vec![Posting::with_amount("assets:test", 100)],
+            status: Some(true),
         }
     }
 

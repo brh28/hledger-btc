@@ -68,6 +68,7 @@ fn row_to_entry(row: &PhoenixRow, account: &str) -> Result<Option<FeedEntry>> {
                 description,
                 tags: TagMap::new(),
                 postings,
+                status: Some(true),
             })
         }
         "lightning_sent" => {
@@ -88,6 +89,7 @@ fn row_to_entry(row: &PhoenixRow, account: &str) -> Result<Option<FeedEntry>> {
                 description,
                 tags: TagMap::new(),
                 postings,
+                status: Some(true),
             })
         }
         "swap_in" => {
@@ -102,6 +104,7 @@ fn row_to_entry(row: &PhoenixRow, account: &str) -> Result<Option<FeedEntry>> {
                 description: "Swap In".to_string(),
                 tags: TagMap::new(),
                 postings,
+                status: Some(true),
             })
         }
         "swap_out" => {
@@ -123,6 +126,7 @@ fn row_to_entry(row: &PhoenixRow, account: &str) -> Result<Option<FeedEntry>> {
                 description: "Swap Out".to_string(),
                 tags: TagMap::new(),
                 postings,
+                status: Some(true),
             })
         }
         other => {

@@ -122,13 +122,14 @@ fn build_entry(
     }
 
     let net = sum_commodity(&postings, "SAT");
-    let (description, counterpart) = if !net.is_negative() {
+    let is_incoming = !net.is_negative();
+    let (description, counterpart) = if is_incoming {
         ("Incoming BTC", "income:unknown")
     } else {
         ("Outgoing BTC", "expenses:unknown")
     };
 
-    if net.is_negative() {
+    if !is_incoming {
         if let Ok(fee) = wallet.calculate_fee(tx) {
             let fee_sat = fee.to_sat() as i64;
             if fee_sat > 0 {
@@ -139,10 +140,23 @@ fn build_entry(
 
     postings.push(Posting::auto_balance(counterpart));
 
+    // Tag incoming entries with the receiving address for receivable matching.
+    let mut tags = TagMap::new();
+    if is_incoming {
+        for p in &postings {
+            if p.amount.as_ref().map(|m| !m.is_negative()).unwrap_or(false) {
+                if let Some(addr) = p.account.rsplit(':').next() {
+                    tags.push("address", addr);
+                }
+            }
+        }
+    }
+
     Some(FeedEntry::onchain(txid, JournalEntry {
         date,
         description: description.to_string(),
-        tags: TagMap::new(),
+        tags,
         postings,
+        status: Some(true),
     }))
 }

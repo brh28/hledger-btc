@@ -7,6 +7,7 @@ pub mod import;
 pub mod journal;
 pub mod persist;
 pub mod receive;
+pub mod receivable;
 pub mod reconcile;
 pub mod scan;
 pub mod source;
