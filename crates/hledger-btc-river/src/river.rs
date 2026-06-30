@@ -95,7 +95,7 @@ fn buy_entry(row: &Row, date: NaiveDate, account: &str, id: &str, desc: &str) ->
     }
     postings.push(Posting::auto_balance(format!("{account}:usd")));
 
-    Ok(FeedEntry::internal("river_id", id.to_string(), JournalEntry {
+    Ok(FeedEntry::provider("river_id", id.to_string(), JournalEntry {
         date,
         description: desc.to_string(),
         tags: TagMap::new(),
@@ -116,7 +116,7 @@ fn sell_entry(row: &Row, date: NaiveDate, account: &str, id: &str, desc: &str) -
     }
     postings.push(Posting::auto_balance(format!("{account}:usd")));
 
-    Ok(FeedEntry::internal("river_id", id.to_string(), JournalEntry {
+    Ok(FeedEntry::provider("river_id", id.to_string(), JournalEntry {
         date,
         description: desc.to_string(),
         tags: TagMap::new(),
@@ -126,7 +126,7 @@ fn sell_entry(row: &Row, date: NaiveDate, account: &str, id: &str, desc: &str) -
 
 fn interest_entry(row: &Row, date: NaiveDate, account: &str, id: &str, desc: &str) -> Result<FeedEntry> {
     let sat = btc_to_sat(row.received_amount.trim())?;
-    Ok(FeedEntry::internal("river_id", id.to_string(), JournalEntry {
+    Ok(FeedEntry::provider("river_id", id.to_string(), JournalEntry {
         date,
         description: desc.to_string(),
         tags: TagMap::new(),
@@ -148,12 +148,12 @@ fn lightning_entry(row: &Row, date: NaiveDate, account: &str, id: &str, desc: &s
             postings.push(Posting::with_amount("expenses:fees:river", fee_sat));
         }
         postings.push(Posting::auto_balance("expenses:unknown"));
-        Ok(Some(FeedEntry::internal("river_id", id.to_string(), JournalEntry {
+        Ok(Some(FeedEntry::provider("river_id", id.to_string(), JournalEntry {
             date, description: desc.to_string(), tags: TagMap::new(), postings,
         })))
     } else {
         let sat = btc_to_sat(row.received_amount.trim())?;
-        Ok(Some(FeedEntry::internal("river_id", id.to_string(), JournalEntry {
+        Ok(Some(FeedEntry::provider("river_id", id.to_string(), JournalEntry {
             date,
             description: desc.to_string(),
             tags: TagMap::new(),
@@ -176,12 +176,12 @@ fn onchain_entry(row: &Row, date: NaiveDate, account: &str, id: &str, desc: &str
             postings.push(Posting::with_amount("expenses:fees:river", fee_sat));
         }
         postings.push(Posting::auto_balance("expenses:unknown"));
-        Ok(Some(FeedEntry::internal("river_id", id.to_string(), JournalEntry {
+        Ok(Some(FeedEntry::provider("river_id", id.to_string(), JournalEntry {
             date, description: desc.to_string(), tags: TagMap::new(), postings,
         })))
     } else {
         let sat = btc_to_sat(row.received_amount.trim())?;
-        Ok(Some(FeedEntry::internal("river_id", id.to_string(), JournalEntry {
+        Ok(Some(FeedEntry::provider("river_id", id.to_string(), JournalEntry {
             date,
             description: desc.to_string(),
             tags: TagMap::new(),
@@ -244,7 +244,7 @@ mod tests {
 
     fn ref_code(e: &FeedEntry) -> &str {
         match &e.kind {
-            EntryKind::Internal { id, .. } => id.as_str(),
+            EntryKind::Provider { id, .. } => id.as_str(),
             _ => panic!("expected internal"),
         }
     }

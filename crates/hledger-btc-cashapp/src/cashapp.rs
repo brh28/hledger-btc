@@ -64,7 +64,7 @@ fn buy_entry(row: &Row, date: NaiveDate, account: &str) -> Result<FeedEntry> {
 
     let price = (cost_usd > 0.0).then(|| PriceAnnotation::Total(format!("{cost_usd:.2} USD")));
 
-    Ok(FeedEntry::internal("cashapp_id", dedup_id(row), JournalEntry {
+    Ok(FeedEntry::provider("cashapp_id", dedup_id(row), JournalEntry {
         date,
         description: "Bitcoin Buy".to_string(),
         tags: TagMap::new(),
@@ -85,7 +85,7 @@ fn sell_entry(row: &Row, date: NaiveDate, account: &str) -> Result<FeedEntry> {
 
     let price = (gross_usd > 0.0).then(|| PriceAnnotation::Total(format!("{gross_usd:.2} USD")));
 
-    Ok(FeedEntry::internal("cashapp_id", dedup_id(row), JournalEntry {
+    Ok(FeedEntry::provider("cashapp_id", dedup_id(row), JournalEntry {
         date,
         description: "Bitcoin Sell".to_string(),
         tags: TagMap::new(),
@@ -99,7 +99,7 @@ fn sell_entry(row: &Row, date: NaiveDate, account: &str) -> Result<FeedEntry> {
 
 fn deposit_entry(row: &Row, date: NaiveDate, account: &str) -> Result<FeedEntry> {
     let sat = btc_to_sat(row.asset_amount.trim())?.abs();
-    Ok(FeedEntry::internal("cashapp_id", dedup_id(row), JournalEntry {
+    Ok(FeedEntry::provider("cashapp_id", dedup_id(row), JournalEntry {
         date,
         description: "Bitcoin Deposit".to_string(),
         tags: TagMap::new(),
@@ -123,7 +123,7 @@ fn withdrawal_entry(row: &Row, date: NaiveDate, account: &str) -> Result<FeedEnt
     }
     postings.push(Posting::auto_balance("expenses:unknown"));
 
-    Ok(FeedEntry::internal("cashapp_id", dedup_id(row), JournalEntry {
+    Ok(FeedEntry::provider("cashapp_id", dedup_id(row), JournalEntry {
         date,
         description: "Bitcoin Withdrawal".to_string(),
         tags: TagMap::new(),
@@ -189,7 +189,7 @@ mod tests {
         let entries = parse(data.as_bytes(), ACCOUNT).unwrap();
         assert_eq!(entries.len(), 1);
         let e = &entries[0];
-        assert!(matches!(&e.kind, EntryKind::Internal { key, .. } if *key == "cashapp_id"));
+        assert!(matches!(&e.kind, EntryKind::Provider { key, .. } if *key == "cashapp_id"));
         assert_eq!(e.journal.description, "Bitcoin Buy");
         assert_eq!(e.journal.postings[0].amount, Some(Money::sat(718)));
         assert_eq!(e.journal.postings[1].account, "expenses:fees:cashapp");
@@ -234,7 +234,7 @@ mod tests {
     fn uses_transaction_id_when_present() {
         let data = csv(&["2025-01-21 07:09:01 CDT,CASHID123,Bitcoin Buy,USD,-$0.75,-$0.25,-$1.00,BTC,\"$104,528.58\",0.00000718,COMPLETE,,,Cash Balance"]);
         let entries = parse(data.as_bytes(), ACCOUNT).unwrap();
-        assert!(matches!(&entries[0].kind, EntryKind::Internal { id, .. } if id == "CASHID123"));
+        assert!(matches!(&entries[0].kind, EntryKind::Provider { id, .. } if id == "CASHID123"));
     }
 
     #[test]
@@ -242,7 +242,7 @@ mod tests {
         let data = csv(&["2025-01-21 07:09:01 CDT,,Bitcoin Buy,USD,-$0.75,-$0.25,-$1.00,BTC,\"$104,528.58\",0.00000718,COMPLETE,,,Cash Balance"]);
         let entries = parse(data.as_bytes(), ACCOUNT).unwrap();
         let id = match &entries[0].kind {
-            EntryKind::Internal { id, .. } => id.clone(),
+            EntryKind::Provider { id, .. } => id.clone(),
             _ => panic!("expected internal"),
         };
         assert_eq!(id, "2025-01-2107:09:01CDT|BitcoinBuy|-0.75|0.00000718");

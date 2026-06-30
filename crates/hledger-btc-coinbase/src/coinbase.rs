@@ -197,7 +197,7 @@ fn order_to_entry(order: &Value, account: &str) -> Result<Option<FeedEntry>> {
     // computes it from the annotation + fee with no rounding drift.
     let price = Some(PriceAnnotation::Total(format!("{btc_cost}")));
 
-    Ok(Some(FeedEntry::internal("coinbase_id", order_id.to_string(), JournalEntry {
+    Ok(Some(FeedEntry::provider("coinbase_id", order_id.to_string(), JournalEntry {
         date,
         description: description.to_string(),
         tags: TagMap::new(),
@@ -259,7 +259,7 @@ fn wallet_tx_to_entry(tx: &Value, account: &str) -> Result<Option<FeedEntry>> {
             tracing::warn!("could not decode payment_hash from BOLT11 invoice for coinbase_id:{id}");
         }
         // Fall through to internal if invoice missing or undecodable.
-        return Ok(Some(FeedEntry::internal("coinbase_id", id.to_string(), JournalEntry {
+        return Ok(Some(FeedEntry::provider("coinbase_id", id.to_string(), JournalEntry {
             date, description, tags: TagMap::new(), postings,
         })));
     }
@@ -269,7 +269,7 @@ fn wallet_tx_to_entry(tx: &Value, account: &str) -> Result<Option<FeedEntry>> {
         // only `network: { status }` with no invoice or hash field. These entries
         // carry only coinbase_id and cannot be reconciled against Phoenix.
         tracing::debug!("coinbase_id:{id} is a Lightning receive; no payment_hash available for reconcile");
-        return Ok(Some(FeedEntry::internal("coinbase_id", id.to_string(), JournalEntry {
+        return Ok(Some(FeedEntry::provider("coinbase_id", id.to_string(), JournalEntry {
             date, description, tags: TagMap::new(), postings,
         })));
     }
@@ -288,7 +288,7 @@ fn wallet_tx_to_entry(tx: &Value, account: &str) -> Result<Option<FeedEntry>> {
     }
 
     // No txid and not lightning — use internal dedup.
-    Ok(Some(FeedEntry::internal("coinbase_id", id.to_string(), JournalEntry {
+    Ok(Some(FeedEntry::provider("coinbase_id", id.to_string(), JournalEntry {
         date, description, tags: TagMap::new(), postings,
     })))
 }

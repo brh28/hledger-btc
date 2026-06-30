@@ -25,11 +25,11 @@ pub enum EntryKind {
     /// Lightning payment. Stamps `payment_hash:<value>` and participates in
     /// cross-source reconciliation with Phoenix entries.
     Lightning { payment_hash: String },
-    /// Exchange-internal transaction with no on-chain footprint (e.g. a
-    /// trade). Stamps `<key>:<value>`. Use only for entries that will never
-    /// appear in a wallet scan — using this for withdrawals/deposits silently
-    /// breaks cross-source reconciliation.
-    Internal { key: &'static str, id: String },
+    /// Provider-assigned ID with no on-chain footprint (e.g. a trade or
+    /// exchange-internal transfer). Stamps `<key>:<value>`. Use only for
+    /// entries that will never appear in a wallet scan — using this for
+    /// withdrawals/deposits silently breaks cross-source reconciliation.
+    Provider { key: &'static str, id: String },
 }
 
 /// A journal entry produced by a feed, paired with its dedup identity.
@@ -48,15 +48,15 @@ impl FeedEntry {
         Self { journal, kind: EntryKind::Lightning { payment_hash } }
     }
 
-    pub fn internal(key: &'static str, id: String, journal: JournalEntry) -> Self {
-        Self { journal, kind: EntryKind::Internal { key, id } }
+    pub fn provider(key: &'static str, id: String, journal: JournalEntry) -> Self {
+        Self { journal, kind: EntryKind::Provider { key, id } }
     }
 }
 
 pub struct Collected {
     pub entries: Vec<JournalEntry>,
     pub failures: Vec<(String, anyhow::Error)>,
-    /// Dedup key names declared by Internal entries across all sources.
+    /// Dedup key names declared by Provider entries across all sources.
     pub provider_keys: Vec<&'static str>,
 }
 
@@ -75,18 +75,19 @@ pub fn collect<'a>(sources: &[Box<dyn Source + 'a>]) -> Collected {
                     match &feed_entry.kind {
                         EntryKind::OnChain { txid } => {
                             feed_entry.journal.tags.push("txid", txid.clone());
+                            feed_entry.journal.tags.push(SOURCE_TAG, source.name());
                         }
                         EntryKind::Lightning { payment_hash } => {
                             feed_entry.journal.tags.push("payment_hash", payment_hash.clone());
+                            feed_entry.journal.tags.push(SOURCE_TAG, source.name());
                         }
-                        EntryKind::Internal { key, id } => {
+                        EntryKind::Provider { key, id } => {
                             feed_entry.journal.tags.push(*key, id.clone());
                             if !provider_keys.contains(key) {
                                 provider_keys.push(key);
                             }
                         }
                     }
-                    feed_entry.journal.tags.push(SOURCE_TAG, source.name());
                     entries.push(feed_entry.journal);
                 }
             }
@@ -159,7 +160,7 @@ pub struct ScanPlan {
 
 /// Splits collected entries into new ones to append and known ones to skip.
 /// Checks both universal dedup keys (`DEDUP_KEYS`) and provider-specific keys
-/// collected from `Internal` entries. A known entry whose sources are all
+/// collected from `Provider` entries. A known entry whose sources are all
 /// already stamped on the journal entry is skipped silently; a known entry
 /// contributing a novel source produces a notice.
 pub fn plan(entries: Vec<JournalEntry>, known: &KnownKeys, provider_keys: &[&'static str]) -> ScanPlan {
@@ -267,13 +268,14 @@ mod tests {
     }
 
     #[test]
-    fn collect_stamps_internal_key_and_collects_provider_key() {
+    fn collect_stamps_provider_key_without_source_tag() {
         let sources: Vec<Box<dyn Source>> = vec![Box::new(Dummy {
             name: "coinbase",
-            entries: vec![FeedEntry::internal("coinbase_id", "ord1".to_string(), journal(TagMap::new()))],
+            entries: vec![FeedEntry::provider("coinbase_id", "ord1".to_string(), journal(TagMap::new()))],
         })];
         let collected = collect(&sources);
         assert_eq!(collected.entries[0].tags.get("coinbase_id"), Some("ord1"));
+        assert_eq!(collected.entries[0].tags.get(SOURCE_TAG), None);
         assert_eq!(collected.provider_keys, vec!["coinbase_id"]);
     }
 
@@ -319,7 +321,7 @@ mod tests {
 
     #[test]
     fn parses_known_keys_with_provider_key() {
-        let journal_text = "2026-05-02 * Trade  ; coinbase_id:ord1, source:coinbase\n    assets:coinbase:usd    -100 USD\n";
+        let journal_text = "2026-05-02 * Trade  ; coinbase_id:ord1\n    assets:coinbase:usd    -100 USD\n";
         let known = KnownKeys::parse(journal_text.as_bytes(), &["coinbase_id"]).unwrap();
         assert!(known.0.contains_key(&("coinbase_id".to_string(), "ord1".to_string())));
     }
@@ -358,14 +360,15 @@ mod tests {
     #[test]
     fn plan_uses_provider_key_for_dedup() {
         let mut known = KnownKeys::default();
-        known.0.insert(("coinbase_id".into(), "ord1".into()), HashSet::from(["coinbase".to_string()]));
+        known.0.insert(("coinbase_id".into(), "ord1".into()), HashSet::new());
         let plan = plan(
-            vec![stamped(TagMap::new().add("coinbase_id", "ord1"), "coinbase")],
+            vec![journal(TagMap::new().add("coinbase_id", "ord1"))],
             &known,
             &["coinbase_id"],
         );
         assert!(plan.new_entries.is_empty());
         assert_eq!(plan.already_recorded, 1);
+        assert!(plan.notices.is_empty());
     }
 
     #[test]
