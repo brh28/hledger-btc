@@ -22,6 +22,7 @@ flowchart LR
         PH[Phoenix]
         CB[Coinbase]
         CA[CashApp]
+        RV[River]
         ET[...]
     end
 
@@ -156,6 +157,7 @@ Supported providers:
 | `phoenix` | Phoenix wallet CSV export | `<base_account>:<name>` | |
 | `coinbase` | Coinbase API | `<base_account>:<name>` | |
 | `cashapp` | Cash App CSV export | `<base_account>:<name>:btc`, `<base_account>:<name>:usd` | Reconciliation not supported — Cash App export does not include txid or payment_hash |
+| `river` | River "Account Activity" CSV export | `<base_account>:<name>` | Reconciliation not supported — River export does not include txid or payment_hash |
 
 ## Design
 
