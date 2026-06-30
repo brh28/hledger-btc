@@ -340,7 +340,7 @@ mod tests {
         let journal = format!("2024-01-15 * Mining reward  ; txid:{TXID}\n    income:bitcoin\n");
         let bip329 = export_to_string(&journal).unwrap();
         let reimported = import_from_str(&journal, &bip329, false).unwrap();
-        assert!(reimported.contains("label:Mining reward"));
+        assert!(reimported.contains("* Mining reward"));
     }
 
     #[test]
@@ -349,7 +349,7 @@ mod tests {
         let unlabeled = format!("2024-01-15 * Recv  ; txid:{TXID}\n    income:bitcoin\n");
         let bip329 = export_to_string(&journal).unwrap();
         let reimported = import_from_str(&unlabeled, &bip329, false).unwrap();
-        assert!(reimported.contains("label:Recv"));
+        assert!(reimported.contains("* Recv"));
         assert!(reimported.contains("lot:20260608"));
     }
 
@@ -430,6 +430,6 @@ mod tests {
         );
         let bip329 = export_to_string(&labeled).unwrap();
         let reimported = import_from_str(&unlabeled, &bip329, false).unwrap();
-        assert!(reimported.contains("label:my savings"));
+        assert!(reimported.contains("; my savings"));
     }
 }
