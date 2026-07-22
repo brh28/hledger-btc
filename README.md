@@ -110,6 +110,23 @@ cd hledger-btc
 cargo install --path crates/hledger-btc
 ```
 
+The default install supports `scan`, `import labels`, `label`, `tag`, `export`, `receive`, `trace`, and `config`. Feed providers are opt-in via feature flags:
+
+```bash
+# Install with specific feed providers
+cargo install --path crates/hledger-btc --features phoenix,river
+
+# Install with all feed providers
+cargo install --path crates/hledger-btc --features phoenix,coinbase,cashapp,river
+```
+
+| Feature | Provider |
+|---|---|
+| `phoenix` | Phoenix wallet CSV export |
+| `coinbase` | Coinbase API |
+| `cashapp` | Cash App CSV export |
+| `river` | River "Account Activity" CSV export |
+
 ## Configuration
 
 Config lives at `~/.config/hledger-btc/config.toml`.

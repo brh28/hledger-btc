@@ -1,4 +1,4 @@
-mod cashapp;
+mod parse;
 
 use std::path::PathBuf;
 use anyhow::{Context, Result};
@@ -26,7 +26,7 @@ impl Source for CashAppFeed {
     fn entries(&self) -> Result<Vec<FeedEntry>> {
         let file = std::fs::File::open(&self.path)
             .with_context(|| format!("failed to open {}", self.path.display()))?;
-        cashapp::parse(file, self.account.as_str())
+        parse::parse(file, self.account.as_str())
     }
 }
 

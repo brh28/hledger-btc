@@ -1,7 +1,10 @@
 [package]
 name = "hledger-btc-core"
-version = "0.1.0"
-edition = "2024"
+description = "Core library for hledger-btc: wallet scanning, journal generation, transfer matching, BIP329 labels"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [features]
 integration = []

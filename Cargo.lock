@@ -800,47 +800,19 @@ name = "hledger-btc"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chrono",
- "clap",
- "dirs",
- "hledger-btc-cashapp",
- "hledger-btc-coinbase",
- "hledger-btc-core",
- "hledger-btc-phoenix",
- "hledger-btc-river",
- "serde",
- "toml",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "hledger-btc-cashapp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "csv",
- "hledger-btc-core",
- "serde",
- "toml",
- "tracing",
-]
-
-[[package]]
-name = "hledger-btc-coinbase"
-version = "0.1.0"
-dependencies = [
- "anyhow",
  "base64 0.22.1",
  "bigdecimal",
  "chrono",
+ "clap",
+ "csv",
+ "dirs",
  "hledger-btc-core",
  "p256",
  "serde",
  "serde_json",
  "toml",
  "tracing",
+ "tracing-subscriber",
  "ureq",
 ]
 
@@ -864,32 +836,6 @@ dependencies = [
  "toml",
  "tracing",
  "ureq",
-]
-
-[[package]]
-name = "hledger-btc-phoenix"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "csv",
- "hledger-btc-core",
- "serde",
- "toml",
- "tracing",
-]
-
-[[package]]
-name = "hledger-btc-river"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "csv",
- "hledger-btc-core",
- "serde",
- "toml",
- "tracing",
 ]
 
 [[package]]

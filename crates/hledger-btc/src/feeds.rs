@@ -5,6 +5,15 @@ use hledger_btc_core::config::Config;
 use hledger_btc_core::journal::Account;
 use hledger_btc_core::source::Source;
 
+#[cfg(feature = "phoenix")]
+pub mod phoenix;
+#[cfg(feature = "coinbase")]
+pub mod coinbase;
+#[cfg(feature = "cashapp")]
+pub mod cashapp;
+#[cfg(feature = "river")]
+pub mod river;
+
 #[derive(Deserialize, Serialize)]
 pub struct FeedConfig {
     pub name: String,
@@ -22,13 +31,21 @@ impl FeedConfig {
 pub fn build_feed(cfg: &Config, entry: &FeedConfig) -> Result<Box<dyn Source + 'static>> {
     match entry.provider.as_str() {
         #[cfg(feature = "phoenix")]
-        "phoenix" => hledger_btc_phoenix::build(&entry.config, entry.account_name(&cfg.base_account)),
+        "phoenix" => phoenix::build(&entry.config, entry.account_name(&cfg.base_account)),
         #[cfg(feature = "coinbase")]
-        "coinbase" => hledger_btc_coinbase::build(&entry.config, entry.account_name(&cfg.base_account)),
+        "coinbase" => coinbase::build(&entry.config, entry.account_name(&cfg.base_account)),
         #[cfg(feature = "cashapp")]
-        "cashapp" => hledger_btc_cashapp::build(&entry.config, entry.account_name(&cfg.base_account)),
+        "cashapp" => cashapp::build(&entry.config, entry.account_name(&cfg.base_account)),
         #[cfg(feature = "river")]
-        "river" => hledger_btc_river::build(&entry.config, entry.account_name(&cfg.base_account)),
+        "river" => river::build(&entry.config, entry.account_name(&cfg.base_account)),
+        #[cfg(not(feature = "phoenix"))]
+        "phoenix" => anyhow::bail!("feed provider 'phoenix' is not enabled; reinstall with `--features phoenix`"),
+        #[cfg(not(feature = "coinbase"))]
+        "coinbase" => anyhow::bail!("feed provider 'coinbase' is not enabled; reinstall with `--features coinbase`"),
+        #[cfg(not(feature = "cashapp"))]
+        "cashapp" => anyhow::bail!("feed provider 'cashapp' is not enabled; reinstall with `--features cashapp`"),
+        #[cfg(not(feature = "river"))]
+        "river" => anyhow::bail!("feed provider 'river' is not enabled; reinstall with `--features river`"),
         other => anyhow::bail!("unknown feed provider '{other}'"),
     }
 }

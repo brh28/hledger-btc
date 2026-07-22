@@ -383,23 +383,23 @@ fn main() -> Result<()> {
                         #[cfg(feature = "phoenix")]
                         FeedProvider::Phoenix { path, name } => {
                             let account = base.append(name.as_deref().unwrap_or("phoenix"));
-                            Box::new(hledger_btc_phoenix::PhoenixFeed::new(path, account))
+                            Box::new(feeds::phoenix::PhoenixFeed::new(path, account))
                         }
                         #[cfg(feature = "cashapp")]
                         FeedProvider::Cashapp { path, name } => {
                             let account = base.append(name.as_deref().unwrap_or("cashapp"));
-                            Box::new(hledger_btc_cashapp::CashAppFeed::new(path, account))
+                            Box::new(feeds::cashapp::CashAppFeed::new(path, account))
                         }
                         #[cfg(feature = "river")]
                         FeedProvider::River { path, name } => {
                             let account = base.append(name.as_deref().unwrap_or("river"));
-                            Box::new(hledger_btc_river::RiverFeed::new(path, account))
+                            Box::new(feeds::river::RiverFeed::new(path, account))
                         }
                         #[cfg(feature = "coinbase")]
                         FeedProvider::Coinbase { key_file, name } => match key_file {
                             Some(kf) => {
                                 let account = base.append(name.as_deref().unwrap_or("coinbase"));
-                                Box::new(hledger_btc_coinbase::CoinbaseFeed::new(&kf, account)?)
+                                Box::new(feeds::coinbase::CoinbaseFeed::new(&kf, account)?)
                             }
                             None => {
                                 let config = config.ok_or_else(|| anyhow::anyhow!(

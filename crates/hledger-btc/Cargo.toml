@@ -1,20 +1,31 @@
 [package]
 name = "hledger-btc"
-version = "0.1.0"
-edition = "2024"
+description = "Sync Bitcoin wallets and third-party feeds into an hledger plain-text accounting journal"
+readme = "../../README.md"
+keywords = ["bitcoin", "hledger", "accounting", "bip329", "cli"]
+categories = ["command-line-utilities", "finance", "cryptography::cryptocurrencies"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [features]
-phoenix = ["dep:hledger-btc-phoenix"]
-coinbase = ["dep:hledger-btc-coinbase"]
-cashapp = ["dep:hledger-btc-cashapp"]
-river = ["dep:hledger-btc-river"]
+phoenix = ["dep:csv"]
+cashapp = ["dep:csv"]
+river = ["dep:csv"]
+coinbase = ["dep:ureq", "dep:p256", "dep:base64", "dep:serde_json", "dep:bigdecimal"]
 
 [dependencies]
-hledger-btc-core = { path = "../hledger-btc-core" }
-hledger-btc-phoenix = { path = "../hledger-btc-phoenix", optional = true }
-hledger-btc-coinbase = { path = "../hledger-btc-coinbase", optional = true }
-hledger-btc-cashapp = { path = "../hledger-btc-cashapp", optional = true }
-hledger-btc-river = { path = "../hledger-btc-river", optional = true }
+hledger-btc-core = { path = "../hledger-btc-core", version = "0.1.0" }
+
+# feed provider deps (enabled by the corresponding feature)
+csv = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+bigdecimal = { workspace = true, optional = true }
+ureq = { version = "2", features = ["json"], optional = true }
+p256 = { version = "0.13", features = ["pem", "ecdsa"], optional = true }
+base64 = { version = "0.22", optional = true }
+
 serde.workspace = true
 clap.workspace = true
 anyhow.workspace = true
