@@ -3,6 +3,7 @@ name = "hledger-btc-core"
 description = "Core library for hledger-btc: wallet scanning, journal generation, transfer matching, BIP329 labels"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
@@ -24,7 +25,6 @@ bigdecimal.workspace = true
 bip329.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-keyring.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 dirs.workspace = true
